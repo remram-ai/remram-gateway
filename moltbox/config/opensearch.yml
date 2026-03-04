@@ -1,0 +1,22 @@
+# Moltbox OpenSearch single-node appliance configuration.
+# Internal-only use in Docker network; no host port exposure.
+
+cluster.name: remram-moltbox
+node.name: opensearch-1
+
+# Bind inside container network so OpenClaw can reach this service.
+network.host: 0.0.0.0
+
+# Locked MVP runtime posture.
+discovery.type: single-node
+plugins.security.disabled: true
+
+# Keep watermark defaults explicit for local appliance operations.
+cluster.routing.allocation.disk.threshold_enabled: true
+cluster.routing.allocation.disk.watermark.low: "85%"
+cluster.routing.allocation.disk.watermark.high: "90%"
+cluster.routing.allocation.disk.watermark.flood_stage: "95%"
+
+# Disable demo auto-configuration paths for predictable startup.
+plugins.security.allow_unsafe_democertificates: false
+plugins.security.allow_default_init_securityindex: false

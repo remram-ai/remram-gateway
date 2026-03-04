@@ -1,0 +1,29 @@
+# Global tool registry for Moltbox runtime.
+
+tools:
+  - id: think
+    kind: reasoning
+    invoke_mode: explicit
+    provider: together
+    model_env: DEEP_THINKING_MODEL
+    policy_tags:
+      - deterministic
+      - safety_checked
+
+  - id: code
+    kind: coding
+    invoke_mode: deterministic
+    provider: together
+    model_env: CODING_MODEL
+    policy_tags:
+      - deterministic
+      - safety_checked
+
+  - id: retrieval_search
+    kind: retrieval
+    invoke_mode: deterministic
+    backend: opensearch
+    endpoint_env: OPENSEARCH_URL
+    policy_tags:
+      - deterministic
+      - internal_only

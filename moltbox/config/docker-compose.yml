@@ -1,0 +1,100 @@
+version: "3.9"
+
+# Moltbox appliance stack.
+# Only the OpenClaw gateway is published to the host/LAN.
+services:
+  openclaw:
+    image: "${OPENCLAW_IMAGE}"
+    container_name: "${COMPOSE_PROJECT_NAME:-moltbox}-openclaw"
+    restart: unless-stopped
+    env_file:
+      - ./.env
+      - ./container.env
+    ports:
+      - "${GATEWAY_PORT:-18789}:18789"
+    depends_on:
+      ollama:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+    volumes:
+      # OpenClaw runtime policy/config bundle for Moltbox.
+      - ../.openclaw:/app/.openclaw:ro
+      # Tiered model routing policy for local/cloud cognition.
+      - ./model-runtime.yml:/app/config/model-runtime.yml:ro
+    networks:
+      - moltbox_internal
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "(curl -fsS http://127.0.0.1:18789/healthz >/dev/null || wget -qO- http://127.0.0.1:18789/healthz >/dev/null) || exit 1",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  ollama:
+    image: "${OLLAMA_IMAGE}"
+    container_name: "${COMPOSE_PROJECT_NAME:-moltbox}-ollama"
+    restart: unless-stopped
+    env_file:
+      - ./.env
+      - ./container.env
+    # GPU is required for local routing performance.
+    gpus: all
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - moltbox_internal
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "(curl -fsS http://127.0.0.1:11434/api/tags >/dev/null || wget -qO- http://127.0.0.1:11434/api/tags >/dev/null) || exit 1",
+        ]
+      interval: 20s
+      timeout: 8s
+      retries: 10
+      start_period: 25s
+
+  opensearch:
+    image: "${OPENSEARCH_IMAGE}"
+    container_name: "${COMPOSE_PROJECT_NAME:-moltbox}-opensearch"
+    restart: unless-stopped
+    env_file:
+      - ./.env
+      - ./container.env
+    environment:
+      # Heap sizing is controlled by .env.
+      OPENSEARCH_JAVA_OPTS: "${OPENSEARCH_JAVA_OPTS}"
+      # Runtime posture is locked to single-node internal MVP.
+      discovery.type: "${DISCOVERY_TYPE:-single-node}"
+      plugins.security.disabled: "${PLUGINS_SECURITY_DISABLED:-true}"
+    volumes:
+      - ./opensearch.yml:/usr/share/opensearch/config/opensearch.yml:ro
+      - opensearch_data:/usr/share/opensearch/data
+    networks:
+      - moltbox_internal
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "(curl -fsS http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow\\&timeout=5s >/dev/null || wget -qO- http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow\\&timeout=5s >/dev/null) || exit 1",
+        ]
+      interval: 20s
+      timeout: 8s
+      retries: 15
+      start_period: 35s
+
+volumes:
+  # Persistent local model cache.
+  ollama_data:
+  # Persistent OpenSearch state.
+  opensearch_data:
+
+networks:
+  # Internal appliance network for service-to-service traffic.
+  moltbox_internal:
+    driver: bridge

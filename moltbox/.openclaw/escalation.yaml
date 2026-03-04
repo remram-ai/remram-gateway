@@ -1,0 +1,30 @@
+# Escalation governance policy for Moltbox.
+
+escalation:
+  precedence:
+    - deterministic_tool_invocation
+    - user_override
+    - heuristic_uncertainty_reasoning_tier_only
+    - budget_gate
+    - safety_override
+
+  limits:
+    max_tokens_per_request_env: ESCALATION_MAX_TOKENS
+    daily_spend_usd_cap_env: ESCALATION_DAILY_USD_CAP
+    timeout_ms_env: ESCALATION_TIMEOUT_MS
+
+  budget_gate:
+    deny_on_budget_breach: true
+    safety_override_bypasses_budget_gate: true
+
+  logging:
+    required_fields:
+      - request_id
+      - session_id
+      - user_id
+      - escalation_reason
+      - source_agent
+      - selected_provider
+      - selected_model
+      - token_estimate
+      - budget_state

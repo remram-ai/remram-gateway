@@ -1,0 +1,41 @@
+# Moltbox agent registry.
+# Memory remains user-scoped; channel does not imply privilege escalation.
+
+agents:
+  - id: primary_household
+    name: Primary Household Agent
+    role: general_household_assistant
+    allowed_tools:
+      - retrieval_search
+      - think
+      - code
+    memory:
+      namespace_policy: user_scoped
+    channels:
+      - web
+      - signal
+
+  - id: owner_admin
+    name: Owner Admin Agent
+    role: privileged_maintenance_operator
+    allowed_tools:
+      - retrieval_search
+      - think
+      - code
+    memory:
+      namespace_policy: user_scoped
+    channels:
+      - web
+      - signal
+
+  - id: group_facilitator
+    name: Group Session Facilitator
+    role: multi_user_context_facilitator
+    allowed_tools:
+      - retrieval_search
+      - think
+    memory:
+      namespace_policy: user_scoped
+    channels:
+      - web
+      - signal

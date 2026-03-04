@@ -1,0 +1,26 @@
+# Moltbox routing policy.
+# Local-first orchestration with controlled escalation boundaries.
+
+routing:
+  strategy: local_first
+  local_provider: ollama
+  local_model: qwen3:8b
+
+  deterministic_tool_invocation:
+    bypass_heuristic_escalation: true
+
+  heuristic_escalation:
+    enabled: true
+    allowed_tier: cloud_reasoning_only
+    triggers:
+      - persistent_ambiguity
+      - high_task_depth
+      - irreversible_action_detected
+
+  structured_output:
+    enabled: true
+    schema_discipline: strict
+
+  anti_hybrid_drift:
+    enabled: true
+    policy: route_or_escalate_not_both

@@ -1,0 +1,22 @@
+# Interaction channel policy for Moltbox.
+
+channels:
+  web:
+    enabled: true
+    auth_required: true
+    privilege_level: standard
+
+  signal:
+    enabled: true
+    mode: polling
+    pairing_required_first_contact: true
+    secure_dm_isolation: true
+    poll_interval_ms_env: SIGNAL_POLL_INTERVAL_MS
+    privilege_level: standard
+
+group_sessions:
+  require_resolvable_speaker_identity: true
+  reject_unresolved_speaker_messages: true
+
+privilege_policy:
+  channel_selection_does_not_grant_elevation: true
