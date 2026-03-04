@@ -32,6 +32,17 @@ if [[ "${EUID}" -ne 0 ]]; then
   SUDO="sudo"
 fi
 
+ensure_curl() {
+  if command -v curl >/dev/null 2>&1; then
+    log_info "curl is already installed."
+    return
+  fi
+
+  log_info "Installing curl (required by Moltbox scripts)."
+  ${SUDO} apt-get update
+  ${SUDO} apt-get install -y curl
+}
+
 install_docker_if_missing() {
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     log_info "Docker Engine and Compose plugin already installed."
@@ -115,6 +126,41 @@ install_nvidia_toolkit_if_missing() {
   fi
 }
 
+enforce_gpu_prerequisite() {
+  # Moltbox requires GPU availability for Ollama (`gpus: all` in compose).
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    log_error "GPU prerequisite check failed: 'nvidia-smi' command not found."
+    log_error "Install a working NVIDIA driver before running Moltbox deployment."
+    exit 1
+  fi
+
+  if ! nvidia-smi >/dev/null 2>&1; then
+    log_error "GPU prerequisite check failed: 'nvidia-smi' returned non-zero."
+    log_error "NVIDIA driver/runtime is not healthy; fix host GPU setup and rerun."
+    exit 1
+  fi
+
+  log_info "GPU prerequisite check passed."
+}
+
+ensure_docker_daemon_ready() {
+  log_info "Ensuring Docker daemon is enabled and running."
+  ${SUDO} systemctl enable --now docker
+
+  if docker info >/dev/null 2>&1; then
+    log_info "Docker daemon is reachable."
+    return
+  fi
+
+  if ${SUDO} docker info >/dev/null 2>&1; then
+    log_info "Docker daemon is reachable (via sudo)."
+    return
+  fi
+
+  log_error "Docker daemon is not reachable."
+  exit 1
+}
+
 reconcile_vm_max_map_count() {
   local required=262144
   local conf_file="/etc/sysctl.d/99-moltbox-opensearch.conf"
@@ -138,19 +184,18 @@ post_checks() {
   log_info "Running post-install checks."
   docker --version
   docker compose version
-  if command -v nvidia-smi >/dev/null 2>&1; then
-    nvidia-smi >/dev/null || log_warn "nvidia-smi returned non-zero."
-  else
-    log_warn "nvidia-smi not found on host."
-  fi
+  nvidia-smi >/dev/null
   sysctl vm.max_map_count
 }
 
 main() {
   require_linux_ubuntu
+  ensure_curl
   install_docker_if_missing
   ensure_docker_group_membership
   install_nvidia_toolkit_if_missing
+  enforce_gpu_prerequisite
+  ensure_docker_daemon_ready
   reconcile_vm_max_map_count
   post_checks
   log_info "Moltbox host installation completed."

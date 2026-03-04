@@ -94,10 +94,10 @@ check_gateway() {
 
 check_internal_connectivity() {
   log_info "Checking OpenClaw -> Ollama connectivity."
-  compose exec -T openclaw node -e "const http=require('http');http.get('http://ollama:11434/api/tags',r=>{if(r.statusCode&&r.statusCode<500){process.exit(0)}process.exit(1)}).on('error',()=>process.exit(1));"
+  compose exec -T openclaw node -e "const http=require('http');http.get('http://ollama:11434/api/tags',r=>{if(r.statusCode&&r.statusCode>=200&&r.statusCode<300){process.exit(0)}process.exit(1)}).on('error',()=>process.exit(1));"
 
   log_info "Checking OpenClaw -> OpenSearch connectivity."
-  compose exec -T openclaw node -e "const http=require('http');http.get('http://opensearch:9200/_cluster/health',r=>{if(r.statusCode&&r.statusCode<500){process.exit(0)}process.exit(1)}).on('error',()=>process.exit(1));"
+  compose exec -T openclaw node -e "const http=require('http');http.get('http://opensearch:9200/_cluster/health',r=>{if(r.statusCode&&r.statusCode>=200&&r.statusCode<300){process.exit(0)}process.exit(1)}).on('error',()=>process.exit(1));"
 }
 
 assert_internal_only_ports() {

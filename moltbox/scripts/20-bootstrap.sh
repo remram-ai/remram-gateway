@@ -150,10 +150,12 @@ bring_up_stack() {
 }
 
 wait_for_ollama() {
-  local max_attempts=30
+  local sleep_seconds="${BOOTSTRAP_WAIT_INTERVAL_SECONDS:-2}"
+  local wait_seconds="${BOOTSTRAP_OLLAMA_WAIT_SECONDS:-60}"
+  local max_attempts=$(( (wait_seconds + sleep_seconds - 1) / sleep_seconds ))
   local attempt=1
 
-  log_info "Waiting for Ollama service readiness."
+  log_info "Waiting for Ollama service readiness (timeout: ${wait_seconds}s)."
   while (( attempt <= max_attempts )); do
     # Use native CLI check to avoid assuming curl exists in the image.
     if compose exec -T ollama ollama list >/dev/null 2>&1; then
@@ -161,7 +163,7 @@ wait_for_ollama() {
       return 0
     fi
     log_warn "Ollama not ready yet (attempt ${attempt}/${max_attempts})."
-    sleep 2
+    sleep "${sleep_seconds}"
     attempt=$((attempt + 1))
   done
 
@@ -177,17 +179,19 @@ prepull_model() {
 
 wait_for_gateway() {
   local port="${GATEWAY_PORT:-18789}"
-  local max_attempts=40
+  local sleep_seconds="${BOOTSTRAP_WAIT_INTERVAL_SECONDS:-2}"
+  local wait_seconds="${BOOTSTRAP_GATEWAY_WAIT_SECONDS:-80}"
+  local max_attempts=$(( (wait_seconds + sleep_seconds - 1) / sleep_seconds ))
   local attempt=1
 
-  log_info "Waiting for OpenClaw gateway health on http://127.0.0.1:${port}/healthz"
+  log_info "Waiting for OpenClaw gateway health on http://127.0.0.1:${port}/healthz (timeout: ${wait_seconds}s)"
   while (( attempt <= max_attempts )); do
     if curl -fsS "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1; then
       log_info "OpenClaw gateway is healthy."
       return 0
     fi
     log_warn "Gateway not ready yet (attempt ${attempt}/${max_attempts})."
-    sleep 2
+    sleep "${sleep_seconds}"
     attempt=$((attempt + 1))
   done
 
