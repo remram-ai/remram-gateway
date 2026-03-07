@@ -143,7 +143,19 @@ bash ./scripts/30-validate.sh
 
 Signal integration is optional for this checklist and does not block first web chat.
 
-## 9. Manual Compose Context
+## 9. Collect a Diagnostics Bundle Before Troubleshooting
+
+When the appliance is unhealthy but still has enough state to inspect, collect the official debug bundle before making manual changes:
+
+```bash
+bash ./scripts/99-diagnostics.sh
+```
+
+This writes a timestamped archive to `/tmp/moltbox-debug-YYYYMMDD-HHMMSS.tar.gz` and prints an `scp` command for downloading it to your workstation.
+
+Attach that archive to the bug report or troubleshooting thread before applying a runtime reset.
+
+## 10. Manual Compose Context
 
 For direct `docker compose` commands, export the runtime root and run from the compose directory:
 
@@ -152,7 +164,7 @@ export MOLTBOX_RUNTIME_ROOT="$HOME/.openclaw"
 cd ~/git/remram-gateway/moltbox/config
 ```
 
-## 10. Post-Install Validation Commands
+## 11. Post-Install Validation Commands
 
 Check container state:
 
@@ -173,7 +185,7 @@ curl http://127.0.0.1:18789/healthz
 curl http://127.0.0.1:18789/readyz
 ```
 
-## 11. Verify the Gateway Token
+## 12. Verify the Gateway Token
 
 Read the token from the runtime env file:
 
@@ -202,7 +214,31 @@ bash ./scripts/20-bootstrap.sh
 
 This forces the stack to reconcile against the current runtime files in `~/.openclaw`.
 
-## 12. Open the Gateway and Send the First Chat
+## 13. Reset Runtime State Without Reinstalling
+
+If runtime configuration, agent state, or session data become corrupted, use the runtime reset tool instead of reinstalling the host:
+
+```bash
+cd ~/git/remram-gateway/moltbox
+bash ./scripts/12-runtime-reset.sh
+```
+
+`scripts/12-runtime-reset.sh`:
+
+- stops Moltbox containers if they exist
+- removes those containers if they exist
+- clears the contents of `~/.openclaw`
+- preserves Docker volumes, networks, images, and repository files
+- removes old `/tmp/moltbox-debug-*.tar.gz` bundles
+
+After reset, bring the appliance back with:
+
+```bash
+bash ./scripts/20-bootstrap.sh
+bash ./scripts/30-validate.sh
+```
+
+## 14. Open the Gateway and Send the First Chat
 
 Get the host LAN IP:
 
@@ -219,7 +255,7 @@ Open OpenClaw:
 
 When prompted, enter the token from `~/.openclaw/.env` and send the first message.
 
-## 13. Remote Development Workflow
+## 15. Remote Development Workflow
 
 Recommended tooling:
 
