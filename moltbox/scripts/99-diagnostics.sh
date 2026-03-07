@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 # Moltbox official debug bundle collector.
 # Captures host and container runtime state without mutating the system.
@@ -8,6 +8,8 @@ timestamp() { date +"%Y-%m-%dT%H:%M:%S%z"; }
 log_info() { echo "[$(timestamp)] [INFO] $*"; }
 log_warn() { echo "[$(timestamp)] [WARN] $*" >&2; }
 log_error() { echo "[$(timestamp)] [ERROR] $*" >&2; }
+
+trap 'log_error "Diagnostics collection failed near line ${BASH_LINENO[0]}."' ERR
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOLTBOX_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -35,11 +37,13 @@ resolve_target_home() {
 TARGET_USER="$(resolve_target_user)"
 TARGET_HOME="$(resolve_target_home "${TARGET_USER}")"
 RUNTIME_ROOT="${MOLTBOX_RUNTIME_ROOT:-${TARGET_HOME}/.openclaw}"
+RUNTIME_ENV_FILE="${RUNTIME_ROOT}/.env"
 PREFERRED_CONFIG_DIR="${TARGET_HOME}/git/remram-gateway/moltbox/config"
 REPO_CONFIG_SOURCE="${CONFIG_DIR}"
 if [[ -d "${PREFERRED_CONFIG_DIR}" ]]; then
   REPO_CONFIG_SOURCE="${PREFERRED_CONFIG_DIR}"
 fi
+COMPOSE_FILE="${REPO_CONFIG_SOURCE}/docker-compose.yml"
 
 BUNDLE_TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 WORK_DIR="$(mktemp -d "/tmp/moltbox-debug-${BUNDLE_TIMESTAMP}.XXXXXX")"
@@ -196,6 +200,14 @@ docker_cmd() {
   sudo env "MOLTBOX_RUNTIME_ROOT=${RUNTIME_ROOT}" docker "$@"
 }
 
+compose_available() {
+  docker_available && [[ -f "${COMPOSE_FILE}" ]] && [[ -f "${RUNTIME_ENV_FILE}" ]]
+}
+
+compose_cmd() {
+  docker_cmd compose --env-file "${RUNTIME_ENV_FILE}" -f "${COMPOSE_FILE}" "$@"
+}
+
 capture_docker_command() {
   local outfile="$1"
   shift
@@ -206,6 +218,18 @@ capture_docker_command() {
   fi
 
   capture_command "${outfile}" docker_cmd "$@"
+}
+
+capture_compose_command() {
+  local outfile="$1"
+  shift
+
+  if ! compose_available; then
+    write_note "${outfile}" "Docker compose context unavailable (missing docker CLI, compose file, or runtime env file)."
+    return
+  fi
+
+  capture_command "${outfile}" compose_cmd "$@"
 }
 
 capture_docker_diagnostics() {
@@ -220,8 +244,11 @@ capture_docker_diagnostics() {
   capture_command "${BUNDLE_ROOT}/docker/docker-ps-a.txt" docker_cmd ps -a
   capture_command "${BUNDLE_ROOT}/docker/docker-images.txt" docker_cmd images
   capture_command "${BUNDLE_ROOT}/docker/docker-volume-ls.txt" docker_cmd volume ls
+  capture_command "${BUNDLE_ROOT}/docker/docker-volume-inspect.txt" docker_cmd volume inspect moltbox_ollama_data moltbox_opensearch_data
   capture_command "${BUNDLE_ROOT}/docker/docker-network-ls.txt" docker_cmd network ls
   capture_command "${BUNDLE_ROOT}/docker/docker-info.txt" docker_cmd info
+  capture_compose_command "${BUNDLE_ROOT}/docker/compose-ps.txt" ps
+  capture_compose_command "${BUNDLE_ROOT}/docker/compose-config.txt" config
 }
 
 capture_system_diagnostics() {
@@ -231,15 +258,21 @@ capture_system_diagnostics() {
   capture_command "${BUNDLE_ROOT}/system/df-h.txt" df -h
   capture_command "${BUNDLE_ROOT}/system/free-h.txt" free -h
   capture_command "${BUNDLE_ROOT}/system/ip-addr.txt" ip addr
+  capture_command "${BUNDLE_ROOT}/system/ip-route.txt" ip route
   capture_command "${BUNDLE_ROOT}/system/ss-tulpn.txt" ss -tulpn
   capture_command "${BUNDLE_ROOT}/system/ps-aux.txt" ps aux
+  capture_command "${BUNDLE_ROOT}/system/sysctl-vm-max-map-count.txt" sysctl vm.max_map_count
+  capture_command "${BUNDLE_ROOT}/system/docker-compose-version.txt" docker compose version
+  capture_command "${BUNDLE_ROOT}/system/nvidia-smi.txt" nvidia-smi
 
   write_note \
     "${BUNDLE_ROOT}/system/collector-context.txt" \
     "Target user: ${TARGET_USER}" \
     "Target home: ${TARGET_HOME}" \
     "Runtime root: ${RUNTIME_ROOT}" \
+    "Runtime env file: ${RUNTIME_ENV_FILE}" \
     "Repository config source: ${REPO_CONFIG_SOURCE}" \
+    "Compose file: ${COMPOSE_FILE}" \
     "Script directory: ${SCRIPT_DIR}"
 }
 
@@ -262,6 +295,14 @@ capture_container_diagnostics() {
     capture_docker_command \
       "${BUNDLE_ROOT}/network/${container_name}-inspect.json" \
       inspect "${container_name}"
+
+    capture_docker_command \
+      "${BUNDLE_ROOT}/docker/${container_name}-env.txt" \
+      exec "${container_name}" sh -lc 'env | sort'
+
+    capture_docker_command \
+      "${BUNDLE_ROOT}/docker/${container_name}-mounts.txt" \
+      inspect -f '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}' "${container_name}"
   done
 }
 
@@ -277,11 +318,63 @@ capture_model_diagnostics() {
 
   capture_docker_command \
     "${BUNDLE_ROOT}/models/openclaw-models-list.txt" \
-    exec "moltbox-openclaw" openclaw models list
+    exec "moltbox-openclaw" openclaw models list --all --json
+
+  capture_docker_command \
+    "${BUNDLE_ROOT}/models/openclaw-models-status.txt" \
+    exec "moltbox-openclaw" openclaw models status --json
+
+  capture_docker_command \
+    "${BUNDLE_ROOT}/models/openclaw-models-status-probe.txt" \
+    exec "moltbox-openclaw" openclaw models status --probe --probe-provider together --probe-concurrency 1 --probe-timeout 10000 --probe-max-tokens 8
+
+  capture_docker_command \
+    "${BUNDLE_ROOT}/models/openclaw-agents-list.txt" \
+    exec "moltbox-openclaw" openclaw agents list
+
+  capture_docker_command \
+    "${BUNDLE_ROOT}/models/openclaw-config-file.txt" \
+    exec "moltbox-openclaw" openclaw config file
+
+  capture_docker_command \
+    "${BUNDLE_ROOT}/models/openclaw-config-primary-model.txt" \
+    exec "moltbox-openclaw" openclaw config get agents.defaults.model.primary
+
+  capture_docker_command \
+    "${BUNDLE_ROOT}/models/openclaw-config-gateway-mode.txt" \
+    exec "moltbox-openclaw" openclaw config get gateway.mode
+
+  capture_docker_command \
+    "${BUNDLE_ROOT}/models/openclaw-config-gateway-bind.txt" \
+    exec "moltbox-openclaw" openclaw config get gateway.bind
+
+  capture_docker_command \
+    "${BUNDLE_ROOT}/models/openclaw-config-gateway-auth-mode.txt" \
+    exec "moltbox-openclaw" openclaw config get gateway.auth.mode
+
+  capture_docker_command \
+    "${BUNDLE_ROOT}/models/openclaw-config-ollama-provider.txt" \
+    exec "moltbox-openclaw" openclaw config get models.providers.ollama
+
+  capture_docker_command \
+    "${BUNDLE_ROOT}/models/openclaw-config-together-fallback.txt" \
+    exec "moltbox-openclaw" openclaw config get agents.defaults.model.fallbacks[0]
 
   capture_docker_command \
     "${BUNDLE_ROOT}/models/ollama-tags.json" \
     exec "moltbox-ollama" curl -fsS http://localhost:11434/api/tags
+
+  capture_docker_command \
+    "${BUNDLE_ROOT}/models/ollama-list.txt" \
+    exec "moltbox-ollama" ollama list
+
+  capture_docker_command \
+    "${BUNDLE_ROOT}/models/opensearch-cluster-health-from-opensearch.txt" \
+    exec "moltbox-opensearch" curl -fsS http://localhost:9200/_cluster/health
+
+  capture_docker_command \
+    "${BUNDLE_ROOT}/models/opensearch-cluster-health-from-openclaw.txt" \
+    exec "moltbox-openclaw" node -e "const http=require('http');http.get('http://opensearch:9200/_cluster/health',r=>{r.pipe(process.stdout);r.on('end',()=>process.exit(r.statusCode&&r.statusCode<400?0:1));}).on('error',e=>{console.error(e.message);process.exit(1);});"
 }
 
 create_archive() {

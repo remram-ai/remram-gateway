@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 # Moltbox bootstrap routine.
 # Creates runtime files under ~/.openclaw, starts the stack, and pre-pulls the local routing model.
@@ -8,6 +8,8 @@ timestamp() { date +"%Y-%m-%dT%H:%M:%S%z"; }
 log_info() { echo "[$(timestamp)] [INFO] $*"; }
 log_warn() { echo "[$(timestamp)] [WARN] $*" >&2; }
 log_error() { echo "[$(timestamp)] [ERROR] $*" >&2; }
+
+trap 'log_error "Bootstrap failed near line ${BASH_LINENO[0]}."' ERR
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOLTBOX_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -57,6 +59,18 @@ docker_cmd() {
   fi
 }
 
+compose() {
+  docker_cmd compose --env-file "${RUNTIME_ENV_FILE}" -f "${COMPOSE_FILE}" "$@"
+}
+
+openclaw_exec() {
+  compose exec -T openclaw openclaw "$@"
+}
+
+ollama_exec() {
+  compose exec -T ollama "$@"
+}
+
 require_file() {
   local path="$1"
   if [[ ! -f "${path}" ]]; then
@@ -96,6 +110,25 @@ copy_if_missing() {
     cp "${source_path}" "${dest_path}"
   else
     log_info "Skipping existing runtime config: ${display_dest}"
+  fi
+}
+
+ensure_runtime_root_safe() {
+  if [[ -z "${RUNTIME_ROOT}" ]]; then
+    log_error "Runtime root is empty."
+    exit 1
+  fi
+
+  case "${RUNTIME_ROOT}" in
+    "/"|"/home"|"/root"|"/tmp")
+      log_error "Refusing unsafe runtime root: ${RUNTIME_ROOT}"
+      exit 1
+      ;;
+  esac
+
+  if [[ "${RUNTIME_ROOT}" == "${USER_HOME}" || "${RUNTIME_ROOT}" == "${REPO_ROOT}"* ]]; then
+    log_error "Refusing unsafe runtime root: ${RUNTIME_ROOT}"
+    exit 1
   fi
 }
 
@@ -195,6 +228,15 @@ require_key() {
   fi
 }
 
+require_non_empty_env() {
+  local key="$1"
+  local value="${!key:-}"
+  if [[ -z "${value//[[:space:]]/}" ]]; then
+    log_error "Required runtime value is empty: ${key}"
+    exit 1
+  fi
+}
+
 validate_required_keys() {
   require_key "${RUNTIME_ENV_FILE}" "OPENCLAW_IMAGE"
   require_key "${RUNTIME_ENV_FILE}" "OPENCLAW_GATEWAY_BIND"
@@ -204,6 +246,8 @@ validate_required_keys() {
   require_key "${RUNTIME_ENV_FILE}" "GATEWAY_PORT"
   require_key "${RUNTIME_ENV_FILE}" "ESCALATION_MAX_TOKENS"
   require_key "${RUNTIME_ENV_FILE}" "ESCALATION_DAILY_USD_CAP"
+  require_key "${RUNTIME_ENV_FILE}" "CLOUD_REASONING_MODEL"
+  require_key "${RUNTIME_CONTAINER_ENV_FILE}" "TOGETHER_API_KEY"
   require_key "${RUNTIME_CONTAINER_ENV_FILE}" "LOCAL_ROUTING_MODEL"
   require_key "${RUNTIME_CONTAINER_ENV_FILE}" "OLLAMA_BASE_URL"
   require_key "${RUNTIME_CONTAINER_ENV_FILE}" "OPENSEARCH_URL"
@@ -235,8 +279,51 @@ load_env() {
   set +a
 }
 
-compose() {
-  docker_cmd compose --env-file "${RUNTIME_ENV_FILE}" -f "${COMPOSE_FILE}" "$@"
+validate_runtime_values() {
+  require_non_empty_env "OPENCLAW_IMAGE"
+  require_non_empty_env "OPENCLAW_GATEWAY_BIND"
+  require_non_empty_env "OPENCLAW_GATEWAY_TOKEN"
+  require_non_empty_env "OLLAMA_IMAGE"
+  require_non_empty_env "OPENSEARCH_IMAGE"
+  require_non_empty_env "GATEWAY_PORT"
+  require_non_empty_env "LOCAL_ROUTING_MODEL"
+  require_non_empty_env "OLLAMA_BASE_URL"
+  require_non_empty_env "OPENSEARCH_URL"
+  require_non_empty_env "CLOUD_PROVIDER"
+  require_non_empty_env "CLOUD_REASONING_MODEL"
+  require_non_empty_env "TOGETHER_API_KEY"
+
+  if [[ "${OPENCLAW_GATEWAY_BIND}" != "lan" ]]; then
+    log_error "Moltbox requires OPENCLAW_GATEWAY_BIND=lan. Found: ${OPENCLAW_GATEWAY_BIND}"
+    exit 1
+  fi
+
+  if [[ "${CLOUD_PROVIDER}" != "together" ]]; then
+    log_error "Moltbox escalation provider must be 'together'. Found: ${CLOUD_PROVIDER}"
+    exit 1
+  fi
+
+  if [[ "${OLLAMA_BASE_URL}" != "http://ollama:11434" ]]; then
+    log_error "OLLAMA_BASE_URL must use Docker service DNS 'http://ollama:11434'. Found: ${OLLAMA_BASE_URL}"
+    exit 1
+  fi
+
+  if [[ "${OLLAMA_BASE_URL}" == */v1 || "${OLLAMA_BASE_URL}" == */v1/ ]]; then
+    log_error "OLLAMA_BASE_URL must use the native Ollama API root, not /v1: ${OLLAMA_BASE_URL}"
+    exit 1
+  fi
+
+  if [[ "${OPENSEARCH_URL}" != "http://opensearch:9200" ]]; then
+    log_error "OPENSEARCH_URL must use Docker service DNS 'http://opensearch:9200'. Found: ${OPENSEARCH_URL}"
+    exit 1
+  fi
+
+  if [[ "${OPENCLAW_GATEWAY_TOKEN}" == "CHANGE_ME_STRONG_TOKEN" ]]; then
+    log_error "OPENCLAW_GATEWAY_TOKEN is still set to the placeholder value."
+    exit 1
+  fi
+
+  log_warn "Moltbox policy YAML files are not upstream OpenClaw config; bootstrap maps runtime env into real OpenClaw config via CLI."
 }
 
 ensure_openclaw_image_available() {
@@ -282,8 +369,7 @@ wait_for_ollama() {
 
   log_info "Waiting for Ollama service readiness (timeout: ${wait_seconds}s)."
   while (( attempt <= max_attempts )); do
-    # Use native CLI check to avoid assuming curl exists in the image.
-    if compose exec -T ollama ollama list >/dev/null 2>&1; then
+    if ollama_exec ollama list >/dev/null 2>&1; then
       log_info "Ollama is ready."
       return 0
     fi
@@ -297,27 +383,44 @@ wait_for_ollama() {
 }
 
 prepull_model() {
-  local model="${LOCAL_ROUTING_MODEL:-qwen3:8b}"
+  local model="${LOCAL_ROUTING_MODEL}"
   log_info "Pre-pulling local routing model: ${model}"
-  compose exec -T ollama ollama pull "${model}"
+  ollama_exec ollama pull "${model}"
+}
+
+assert_ollama_model_pulled() {
+  local model="${LOCAL_ROUTING_MODEL}"
+  local model_list=""
+
+  model_list="$(ollama_exec ollama list 2>&1 || true)"
+  if ! grep -Eq "^${model}[[:space:]]" <<<"${model_list}"; then
+    log_error "Ollama does not report the required routing model '${model}' after bootstrap."
+    printf '%s\n' "${model_list}" >&2
+    return 1
+  fi
+
+  log_info "Confirmed Ollama has ${model}."
 }
 
 show_discovery_diagnostics() {
   log_warn "OpenClaw model discovery diagnostics:"
-  log_warn "--- openclaw models list ---"
-  compose exec -T openclaw openclaw models list || true
-  log_warn "--- /home/node/.openclaw/openclaw.json ---"
-  compose exec -T openclaw sh -lc 'cat /home/node/.openclaw/openclaw.json' || true
-  log_warn "--- curl http://ollama:11434/api/tags ---"
-  compose exec -T openclaw sh -lc 'curl -fsS http://ollama:11434/api/tags' || true
+  log_warn "--- openclaw models list --all --provider ollama ---"
+  openclaw_exec models list --all --provider ollama || true
+  log_warn "--- openclaw models status ---"
+  openclaw_exec models status || true
+  log_warn "--- openclaw config get agents.defaults.model.primary ---"
+  openclaw_exec config get agents.defaults.model.primary || true
+  log_warn "--- openclaw config get models.providers.ollama ---"
+  openclaw_exec config get models.providers.ollama || true
+  log_warn "--- ollama list ---"
+  ollama_exec ollama list || true
 }
 
 assert_ollama_model_registered() {
-  local model="${LOCAL_ROUTING_MODEL:-qwen3:8b}"
-  local model_ref="ollama/${model}"
+  local model_ref="ollama/${LOCAL_ROUTING_MODEL}"
   local model_list=""
 
-  if ! model_list="$(compose exec -T openclaw openclaw models list 2>&1)"; then
+  if ! model_list="$(openclaw_exec models list --all --provider ollama 2>&1)"; then
     log_error "Failed to read OpenClaw model registry."
     printf '%s\n' "${model_list}" >&2
     show_discovery_diagnostics
@@ -344,23 +447,53 @@ assert_ollama_model_registered() {
   log_info "Confirmed OpenClaw registered ${model_ref}."
 }
 
-configure_ollama_provider() {
-  log_info "Configuring OpenClaw Ollama provider for Docker service DNS (http://ollama:11434)."
-  compose exec -T openclaw openclaw config set models.providers.ollama.baseUrl '"http://ollama:11434"'
-  compose exec -T openclaw openclaw config set models.providers.ollama.api '"ollama"'
-  compose exec -T openclaw openclaw config set models.providers.ollama.apiKey '"ollama-local"'
+assert_openclaw_can_reach_ollama() {
+  log_info "Checking OpenClaw -> Ollama native API reachability."
+  compose exec -T openclaw node -e "const http=require('http');http.get('${OLLAMA_BASE_URL}/api/tags',r=>{if(r.statusCode&&r.statusCode>=200&&r.statusCode<300){process.exit(0)}process.exit(1)}).on('error',()=>process.exit(1));"
+}
 
-  log_info "Triggering OpenClaw model discovery."
-  if ! compose exec -T openclaw openclaw models discover; then
-    log_warn "openclaw models discover failed; falling back to openclaw models list to force registry generation."
-    if ! compose exec -T openclaw sh -lc 'openclaw models list >/dev/null'; then
-      log_error "OpenClaw model discovery failed."
-      show_discovery_diagnostics
-      return 1
-    fi
+configure_gateway_runtime() {
+  log_info "Configuring OpenClaw runtime model/provider state."
+  openclaw_exec config set gateway.mode '"local"'
+  openclaw_exec config set models.providers.ollama.apiKey '"ollama-local"'
+  openclaw_exec config set models.providers.ollama.baseUrl "\"${OLLAMA_BASE_URL}\""
+  openclaw_exec config set models.providers.ollama.api '"ollama"'
+  openclaw_exec config set agents.defaults.model.primary "\"ollama/${LOCAL_ROUTING_MODEL}\""
+  openclaw_exec config set agents.defaults.model.fallbacks "[\"together/${CLOUD_REASONING_MODEL}\"]"
+}
+
+verify_openclaw_config_value() {
+  local path="$1"
+  local expected="$2"
+  local actual=""
+
+  if ! actual="$(openclaw_exec config get "${path}" 2>/dev/null)"; then
+    log_error "Failed to read OpenClaw config path: ${path}"
+    return 1
   fi
 
-  assert_ollama_model_registered
+  if [[ "${actual}" != "${expected}" ]]; then
+    log_error "OpenClaw config drift at ${path}: expected '${expected}', got '${actual}'."
+    return 1
+  fi
+}
+
+verify_openclaw_runtime_config() {
+  verify_openclaw_config_value "gateway.mode" "local"
+  verify_openclaw_config_value "models.providers.ollama.baseUrl" "${OLLAMA_BASE_URL}"
+  verify_openclaw_config_value "models.providers.ollama.api" "ollama"
+  verify_openclaw_config_value "agents.defaults.model.primary" "ollama/${LOCAL_ROUTING_MODEL}"
+  verify_openclaw_config_value "agents.defaults.model.fallbacks[0]" "together/${CLOUD_REASONING_MODEL}"
+}
+
+prime_model_registry() {
+  log_info "Priming OpenClaw model registry."
+  openclaw_exec models list --all --provider ollama >/dev/null
+}
+
+probe_together_provider() {
+  log_info "Probing Together provider auth and reachability."
+  openclaw_exec models status --probe --probe-provider together --probe-concurrency 1 --probe-timeout 10000 --probe-max-tokens 8 >/dev/null
 }
 
 wait_for_gateway() {
@@ -389,6 +522,7 @@ main() {
   require_host_cmd docker
   require_host_cmd curl
   require_file "${COMPOSE_FILE}"
+  ensure_runtime_root_safe
   enforce_runtime_outside_git_workspace
   log_info "Repository root: ${REPO_ROOT}"
   log_info "Runtime root: ${RUNTIME_ROOT}"
@@ -398,12 +532,19 @@ main() {
   validate_required_keys
   ensure_gateway_token
   load_env
+  validate_runtime_values
 
   bring_up_stack
   wait_for_ollama
   prepull_model
+  assert_ollama_model_pulled
   wait_for_gateway
-  configure_ollama_provider
+  assert_openclaw_can_reach_ollama
+  configure_gateway_runtime
+  verify_openclaw_runtime_config
+  prime_model_registry
+  assert_ollama_model_registered
+  probe_together_provider
 
   log_info "Runtime root: ${RUNTIME_ROOT}"
   log_info "Gateway token for first login: ${OPENCLAW_GATEWAY_TOKEN}"

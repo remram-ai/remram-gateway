@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 # Moltbox validation script.
 # Verifies service health, gateway readiness, internal connectivity, and exposure policy.
@@ -8,6 +8,8 @@ timestamp() { date +"%Y-%m-%dT%H:%M:%S%z"; }
 log_info() { echo "[$(timestamp)] [INFO] $*"; }
 log_warn() { echo "[$(timestamp)] [WARN] $*" >&2; }
 log_error() { echo "[$(timestamp)] [ERROR] $*" >&2; }
+
+trap 'log_error "Validation failed near line ${BASH_LINENO[0]}."' ERR
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOLTBOX_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -49,6 +51,14 @@ compose() {
   docker_cmd compose --env-file "${RUNTIME_ENV_FILE}" -f "${COMPOSE_FILE}" "$@"
 }
 
+openclaw_exec() {
+  compose exec -T openclaw openclaw "$@"
+}
+
+ollama_exec() {
+  compose exec -T ollama "$@"
+}
+
 require_host_cmd() {
   local cmd="$1"
   if ! command -v "${cmd}" >/dev/null 2>&1; then
@@ -81,6 +91,15 @@ assert_file_not_empty_if_present() {
   fi
 }
 
+assert_file_does_not_contain_invalid_seed() {
+  local path="$1"
+  local label="$2"
+  if [[ -f "${path}" ]] && grep -Eq '"(local_routing_model|cloud_reasoning_model|deep_thinking_model|coding_model)"' "${path}"; then
+    log_error "${label} contains deprecated Moltbox template keys instead of the OpenClaw schema: ${path}"
+    exit 1
+  fi
+}
+
 load_env() {
   # shellcheck disable=SC1090
   set -a
@@ -88,6 +107,46 @@ load_env() {
   # shellcheck disable=SC1090
   source "${RUNTIME_CONTAINER_ENV_FILE}"
   set +a
+}
+
+require_non_empty_env() {
+  local key="$1"
+  local value="${!key:-}"
+  if [[ -z "${value//[[:space:]]/}" ]]; then
+    log_error "Required runtime value is empty: ${key}"
+    exit 1
+  fi
+}
+
+validate_runtime_values() {
+  require_non_empty_env "OPENCLAW_GATEWAY_BIND"
+  require_non_empty_env "OPENCLAW_GATEWAY_TOKEN"
+  require_non_empty_env "LOCAL_ROUTING_MODEL"
+  require_non_empty_env "OLLAMA_BASE_URL"
+  require_non_empty_env "OPENSEARCH_URL"
+  require_non_empty_env "CLOUD_PROVIDER"
+  require_non_empty_env "CLOUD_REASONING_MODEL"
+  require_non_empty_env "TOGETHER_API_KEY"
+
+  if [[ "${OPENCLAW_GATEWAY_BIND}" != "lan" ]]; then
+    log_error "Expected OPENCLAW_GATEWAY_BIND=lan, found: ${OPENCLAW_GATEWAY_BIND}"
+    exit 1
+  fi
+
+  if [[ "${CLOUD_PROVIDER}" != "together" ]]; then
+    log_error "Expected CLOUD_PROVIDER=together, found: ${CLOUD_PROVIDER}"
+    exit 1
+  fi
+
+  if [[ "${OLLAMA_BASE_URL}" != "http://ollama:11434" ]]; then
+    log_error "OLLAMA_BASE_URL must be http://ollama:11434 for container DNS routing. Found: ${OLLAMA_BASE_URL}"
+    exit 1
+  fi
+
+  if [[ "${OPENSEARCH_URL}" != "http://opensearch:9200" ]]; then
+    log_error "OPENSEARCH_URL must be http://opensearch:9200 for container DNS routing. Found: ${OPENSEARCH_URL}"
+    exit 1
+  fi
 }
 
 ensure_service_running() {
@@ -127,10 +186,10 @@ check_gateway() {
 
 check_internal_connectivity() {
   log_info "Checking OpenClaw -> Ollama connectivity."
-  compose exec -T openclaw node -e "const http=require('http');http.get('http://ollama:11434/api/tags',r=>{if(r.statusCode&&r.statusCode>=200&&r.statusCode<300){process.exit(0)}process.exit(1)}).on('error',()=>process.exit(1));"
+  compose exec -T openclaw node -e "const http=require('http');http.get('${OLLAMA_BASE_URL}/api/tags',r=>{if(r.statusCode&&r.statusCode>=200&&r.statusCode<300){process.exit(0)}process.exit(1)}).on('error',()=>process.exit(1));"
 
   log_info "Checking OpenClaw -> OpenSearch connectivity."
-  compose exec -T openclaw node -e "const http=require('http');http.get('http://opensearch:9200/_cluster/health',r=>{if(r.statusCode&&r.statusCode>=200&&r.statusCode<300){process.exit(0)}process.exit(1)}).on('error',()=>process.exit(1));"
+  compose exec -T openclaw node -e "const http=require('http');http.get('${OPENSEARCH_URL}/_cluster/health',r=>{if(r.statusCode&&r.statusCode>=200&&r.statusCode<300){process.exit(0)}process.exit(1)}).on('error',()=>process.exit(1));"
 }
 
 assert_internal_only_ports() {
@@ -149,21 +208,85 @@ check_agent_runtime_files() {
   assert_file_not_empty_if_present "${RUNTIME_MODELS_FILE}" "OpenClaw models.json"
   assert_file_not_empty_if_present "${RUNTIME_AUTH_PROFILES_FILE}" "OpenClaw auth-profiles.json"
   assert_file_not_empty_if_present "${RUNTIME_AGENT_CONFIG_FILE}" "OpenClaw agent-config.json"
+  assert_file_does_not_contain_invalid_seed "${RUNTIME_MODELS_FILE}" "OpenClaw models.json"
+}
+
+check_ollama_model_installed() {
+  local model_list=""
+
+  log_info "Checking Ollama model inventory for ${LOCAL_ROUTING_MODEL}."
+  if ! model_list="$(ollama_exec ollama list 2>&1)"; then
+    log_error "Failed to read Ollama model inventory."
+    printf '%s\n' "${model_list}" >&2
+    exit 1
+  fi
+
+  if ! grep -Eq "^${LOCAL_ROUTING_MODEL}[[:space:]]" <<<"${model_list}"; then
+    log_error "Ollama does not contain the required local routing model: ${LOCAL_ROUTING_MODEL}"
+    printf '%s\n' "${model_list}" >&2
+    exit 1
+  fi
+}
+
+check_openclaw_config_value() {
+  local path="$1"
+  local expected="$2"
+  local actual=""
+
+  if ! actual="$(openclaw_exec config get "${path}" 2>/dev/null)"; then
+    log_error "Failed to read OpenClaw config path: ${path}"
+    exit 1
+  fi
+
+  if [[ "${actual}" != "${expected}" ]]; then
+    log_error "OpenClaw config drift at ${path}: expected '${expected}', got '${actual}'."
+    exit 1
+  fi
+}
+
+check_openclaw_runtime_mounts() {
+  local cid
+  local mounts=""
+
+  cid="$(compose ps -q openclaw)"
+  mounts="$(docker_cmd inspect -f '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}' "${cid}")"
+
+  grep -F "${RUNTIME_ROOT} -> /home/node/.openclaw" <<<"${mounts}" >/dev/null || {
+    log_error "OpenClaw container is not mounted from the runtime root ${RUNTIME_ROOT}."
+    printf '%s\n' "${mounts}" >&2
+    exit 1
+  }
+}
+
+check_openclaw_runtime_config() {
+  log_info "Checking OpenClaw runtime config convergence."
+  check_openclaw_config_value "gateway.mode" "local"
+  check_openclaw_config_value "models.providers.ollama.baseUrl" "${OLLAMA_BASE_URL}"
+  check_openclaw_config_value "models.providers.ollama.api" "ollama"
+  check_openclaw_config_value "agents.defaults.model.primary" "ollama/${LOCAL_ROUTING_MODEL}"
+  check_openclaw_config_value "agents.defaults.model.fallbacks[0]" "together/${CLOUD_REASONING_MODEL}"
+}
+
+check_provider_auth() {
+  log_info "Checking configured provider auth state."
+  openclaw_exec models status --check >/dev/null
+
+  log_info "Probing Together provider auth and reachability."
+  openclaw_exec models status --probe --probe-provider together --probe-concurrency 1 --probe-timeout 10000 --probe-max-tokens 8 >/dev/null
 }
 
 check_ollama_model_registry() {
-  local model="${LOCAL_ROUTING_MODEL:-qwen3:8b}"
-  local model_ref="ollama/${model}"
+  local model_ref="ollama/${LOCAL_ROUTING_MODEL}"
   local model_list=""
 
   log_info "Checking OpenClaw model registry for ${model_ref}."
-  if ! model_list="$(compose exec -T openclaw openclaw models list 2>&1)"; then
+  if ! model_list="$(openclaw_exec models list --all --provider ollama 2>&1)"; then
     log_error "Failed to read OpenClaw model registry."
     printf '%s\n' "${model_list}" >&2
     exit 1
   fi
 
-  printf '%s\n' "${model_list}" | grep -F "ollama/" >/dev/null || {
+  printf '%s\n' "${model_list}" | grep -F "${model_ref}" >/dev/null || {
     log_error "OpenClaw model registry does not contain any Ollama models. Provider configuration failed."
     printf '%s\n' "${model_list}" >&2
     exit 1
@@ -191,6 +314,7 @@ main() {
   require_host_cmd curl
   require_runtime_files
   load_env
+  validate_runtime_values
 
   log_info "Validating compose service status using runtime root ${RUNTIME_ROOT}."
   compose ps
@@ -205,8 +329,12 @@ main() {
 
   check_gateway
   check_internal_connectivity
+  check_openclaw_runtime_mounts
+  check_openclaw_runtime_config
   check_agent_runtime_files
+  check_ollama_model_installed
   check_ollama_model_registry
+  check_provider_auth
   assert_internal_only_ports
 
   log_info "Validation passed."

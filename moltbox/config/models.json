@@ -1,6 +1,0 @@
-{
-  "local_routing_model": "qwen3:8b",
-  "cloud_reasoning_model": "meta-llama/Llama-4-Maverick-Instruct",
-  "deep_thinking_model": "deepseek-ai/DeepSeek-R1",
-  "coding_model": "Qwen/Qwen3-Coder-32B-Instruct"
-}

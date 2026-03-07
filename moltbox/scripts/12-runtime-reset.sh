@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 # Moltbox runtime reset utility.
 # Clears runtime state without reinstalling the host or pruning Docker assets.
@@ -11,6 +11,8 @@ status() {
 error() {
   echo "[runtime-reset] $*" >&2
 }
+
+trap 'error "failed near line ${BASH_LINENO[0]} while resetting runtime"' ERR
 
 resolve_target_home() {
   local target_user="${SUDO_USER:-${USER}}"
@@ -29,6 +31,10 @@ resolve_target_home() {
 
 TARGET_HOME="$(resolve_target_home)"
 RUNTIME_ROOT="${MOLTBOX_RUNTIME_ROOT:-${TARGET_HOME}/.openclaw}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MOLTBOX_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REPO_ROOT="$(cd "${MOLTBOX_DIR}/.." && pwd)"
+GIT_WORKSPACE_ROOT="${TARGET_HOME}/git"
 
 display_runtime_root() {
   if [[ "${RUNTIME_ROOT}" == "${TARGET_HOME}"* ]]; then
@@ -51,6 +57,25 @@ require_host_cmd() {
   local cmd="$1"
   if ! command -v "${cmd}" >/dev/null 2>&1; then
     error "required command not found on host: ${cmd}"
+    exit 1
+  fi
+}
+
+ensure_safe_runtime_root() {
+  if [[ -z "${RUNTIME_ROOT}" ]]; then
+    error "runtime root is empty"
+    exit 1
+  fi
+
+  case "${RUNTIME_ROOT}" in
+    "/"|"/home"|"/root"|"/tmp")
+      error "refusing to clear unsafe runtime root: ${RUNTIME_ROOT}"
+      exit 1
+      ;;
+  esac
+
+  if [[ "${RUNTIME_ROOT}" == "${TARGET_HOME}" || "${RUNTIME_ROOT}" == "${GIT_WORKSPACE_ROOT}"* || "${RUNTIME_ROOT}" == "${REPO_ROOT}"* ]]; then
+    error "refusing to clear unsafe runtime root: ${RUNTIME_ROOT}"
     exit 1
   fi
 }
@@ -83,6 +108,7 @@ print_next_steps() {
 
 main() {
   require_host_cmd docker
+  ensure_safe_runtime_root
 
   stop_containers
   remove_containers
