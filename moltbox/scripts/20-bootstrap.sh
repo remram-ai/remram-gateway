@@ -15,6 +15,7 @@ REPO_ROOT="$(cd "${MOLTBOX_DIR}/.." && pwd)"
 CONFIG_DIR="${MOLTBOX_DIR}/config"
 OPENCLAW_TEMPLATE_DIR="${MOLTBOX_DIR}/.openclaw"
 COMPOSE_FILE="${CONFIG_DIR}/docker-compose.yml"
+OPENCLAW_CONFIG_TEMPLATE="${CONFIG_DIR}/openclaw.json"
 ENV_TEMPLATE="${CONFIG_DIR}/.env.example"
 CONTAINER_ENV_TEMPLATE="${CONFIG_DIR}/container.env.example"
 MODEL_RUNTIME_TEMPLATE="${CONFIG_DIR}/model-runtime.yml"
@@ -39,6 +40,7 @@ resolve_runtime_root() {
 RUNTIME_ROOT="$(resolve_runtime_root)"
 USER_HOME="$(getent passwd "${SUDO_USER:-${USER}}" | cut -d: -f6 2>/dev/null || printf '%s\n' "${HOME}")"
 RUNTIME_ENV_FILE="${RUNTIME_ROOT}/.env"
+RUNTIME_OPENCLAW_CONFIG_FILE="${RUNTIME_ROOT}/openclaw.json"
 RUNTIME_CONTAINER_ENV_FILE="${RUNTIME_ROOT}/container.env"
 RUNTIME_MODEL_RUNTIME_FILE="${RUNTIME_ROOT}/model-runtime.yml"
 RUNTIME_OPENSEARCH_FILE="${RUNTIME_ROOT}/opensearch.yml"
@@ -69,18 +71,29 @@ require_host_cmd() {
   fi
 }
 
+display_path() {
+  local path="$1"
+  if [[ "${path}" == "${RUNTIME_ROOT}"* ]]; then
+    printf '%s\n' "~/.openclaw${path#"${RUNTIME_ROOT}"}"
+    return
+  fi
+  printf '%s\n' "${path}"
+}
+
 copy_if_missing() {
   local source_path="$1"
   local dest_path="$2"
+  local display_dest
+  display_dest="$(display_path "${dest_path}")"
 
   require_file "${source_path}"
   mkdir -p "$(dirname "${dest_path}")"
 
   if [[ ! -f "${dest_path}" ]]; then
-    log_info "Creating runtime file ${dest_path}"
+    log_info "Creating runtime config: ${display_dest}"
     cp "${source_path}" "${dest_path}"
   else
-    log_info "Runtime file exists, skipping: ${dest_path}"
+    log_info "Skipping existing runtime config: ${display_dest}"
   fi
 }
 
@@ -101,6 +114,7 @@ ensure_runtime_dirs() {
 ensure_runtime_templates() {
   ensure_runtime_dirs
 
+  copy_if_missing "${OPENCLAW_CONFIG_TEMPLATE}" "${RUNTIME_OPENCLAW_CONFIG_FILE}"
   copy_if_missing "${ENV_TEMPLATE}" "${RUNTIME_ENV_FILE}"
   copy_if_missing "${CONTAINER_ENV_TEMPLATE}" "${RUNTIME_CONTAINER_ENV_FILE}"
   copy_if_missing "${MODEL_RUNTIME_TEMPLATE}" "${RUNTIME_MODEL_RUNTIME_FILE}"
@@ -111,6 +125,31 @@ ensure_runtime_templates() {
   copy_if_missing "${OPENCLAW_TEMPLATE_DIR}/tools.yaml" "${RUNTIME_ROOT}/tools.yaml"
   copy_if_missing "${OPENCLAW_TEMPLATE_DIR}/escalation.yaml" "${RUNTIME_ROOT}/escalation.yaml"
   copy_if_missing "${MODELS_TEMPLATE}" "${RUNTIME_MODELS_FILE}"
+}
+
+ensure_gateway_mode_local() {
+  local tmp_file
+  tmp_file="$(mktemp)"
+
+  awk '
+    BEGIN { seen=0 }
+    /^OPENCLAW_GATEWAY_MODE=/ {
+      if (seen == 0) {
+        print "OPENCLAW_GATEWAY_MODE=local"
+        seen=1
+      }
+      next
+    }
+    { print }
+    END {
+      if (seen == 0) {
+        print "OPENCLAW_GATEWAY_MODE=local"
+      }
+    }
+  ' "${RUNTIME_ENV_FILE}" > "${tmp_file}"
+
+  mv "${tmp_file}" "${RUNTIME_ENV_FILE}"
+  log_info "Ensured runtime config: $(display_path "${RUNTIME_ENV_FILE}") contains OPENCLAW_GATEWAY_MODE=local"
 }
 
 require_key() {
@@ -259,6 +298,7 @@ main() {
   log_info "Repository root: ${REPO_ROOT}"
   log_info "Runtime root: ${RUNTIME_ROOT}"
   ensure_runtime_templates
+  ensure_gateway_mode_local
   validate_required_keys
   ensure_gateway_token
   load_env

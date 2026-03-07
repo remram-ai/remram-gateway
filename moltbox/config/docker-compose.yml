@@ -1,5 +1,3 @@
-version: "3.9"
-
 # Moltbox appliance stack.
 # Only the OpenClaw gateway is published to the host/LAN.
 services:
