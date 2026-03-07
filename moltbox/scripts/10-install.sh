@@ -62,6 +62,17 @@ ensure_curl() {
   ${SUDO} apt-get install -y curl
 }
 
+ensure_python3() {
+  if command -v python3 >/dev/null 2>&1; then
+    log_info "python3 is already installed."
+    return
+  fi
+
+  log_info "Installing python3 (required for Moltbox runtime config reconciliation)."
+  ${SUDO} apt-get update
+  ${SUDO} apt-get install -y python3
+}
+
 ensure_git_workspace() {
   log_info "Ensuring git workspace exists at ${GIT_WORKSPACE}."
   mkdir -p "${GIT_WORKSPACE}"
@@ -216,6 +227,7 @@ reconcile_vm_max_map_count() {
 
 post_checks() {
   log_info "Running post-install checks."
+  python3 --version
   docker --version
   docker compose version
   nvidia-smi >/dev/null
@@ -227,6 +239,7 @@ main() {
   ensure_git_workspace
   recommend_git_workspace_location
   ensure_curl
+  ensure_python3
   install_docker_if_missing
   ensure_docker_group_membership
   install_nvidia_toolkit_if_missing

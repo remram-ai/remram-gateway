@@ -104,7 +104,40 @@ sudo docker build -t openclaw:local .
 
 This creates the image name Moltbox expects by default: `OPENCLAW_IMAGE=openclaw:local`.
 
-## 7. Bootstrap the Moltbox Runtime
+## 7. Provide the Together API Key
+
+The local routing model is Ollama, but Moltbox still requires a Together API key for the configured cloud fallback and provider probe.
+
+Bootstrap now handles this in one of two ways:
+
+- interactive run: if `~/.openclaw/container.env` has an empty `TOGETHER_API_KEY`, `scripts/20-bootstrap.sh` prompts once and saves the key to `~/.openclaw/container.env`
+- non-interactive run: set `MOLTBOX_TOGETHER_API_KEY` before running bootstrap
+
+Interactive example:
+
+```bash
+cd ~/git/remram-gateway/moltbox
+bash ./scripts/20-bootstrap.sh
+```
+
+Non-interactive example:
+
+```bash
+cd ~/git/remram-gateway/moltbox
+export MOLTBOX_TOGETHER_API_KEY='YOUR_TOGETHER_KEY'
+bash ./scripts/20-bootstrap.sh
+unset MOLTBOX_TOGETHER_API_KEY
+```
+
+Manual fallback if needed:
+
+```bash
+sed -i "s|^TOGETHER_API_KEY=.*$|TOGETHER_API_KEY=YOUR_TOGETHER_KEY|" ~/.openclaw/container.env
+```
+
+The key is runtime state and must live only in `~/.openclaw/container.env`, not in the repository.
+
+## 8. Bootstrap the Moltbox Runtime
 
 ```bash
 cd ~/git/remram-gateway/moltbox
@@ -117,8 +150,14 @@ Bootstrap performs the following:
 - creates `~/.openclaw/agents/main/agent`
 - copies repository templates into `~/.openclaw` only when the runtime files are missing
 - preserves existing runtime files on subsequent runs
+- prompts for `TOGETHER_API_KEY` if needed and saves it to `~/.openclaw/container.env`
+- ensures `OPENSEARCH_JAVA_OPTS="-Xms2g -Xmx2g"` exists in `~/.openclaw/container.env`
+- detects the host LAN IP and hostname and writes required `gateway.controlUi.allowedOrigins` to `~/.openclaw/openclaw.json`
 - starts the container stack
 - pre-pulls the local routing model
+- configures the OpenClaw Ollama provider and default/fallback models before gateway readiness checks
+- verifies OpenClaw can reach `http://ollama:11434/api/tags`
+- primes the Ollama model registry with `openclaw models list --all --provider ollama`
 - waits for gateway readiness
 
 If bootstrap times out on a slower machine, rerun with longer waits:
@@ -127,7 +166,7 @@ If bootstrap times out on a slower machine, rerun with longer waits:
 BOOTSTRAP_OLLAMA_WAIT_SECONDS=180 BOOTSTRAP_GATEWAY_WAIT_SECONDS=180 bash ./scripts/20-bootstrap.sh
 ```
 
-## 8. Validate the Stack
+## 9. Validate the Stack
 
 ```bash
 bash ./scripts/30-validate.sh
@@ -143,7 +182,7 @@ bash ./scripts/30-validate.sh
 
 Signal integration is optional for this checklist and does not block first web chat.
 
-## 9. Collect a Diagnostics Bundle Before Troubleshooting
+## 10. Collect a Diagnostics Bundle Before Troubleshooting
 
 When the appliance is unhealthy but still has enough state to inspect, collect the official debug bundle before making manual changes:
 
@@ -155,7 +194,7 @@ This writes a timestamped archive to `/tmp/moltbox-debug-YYYYMMDD-HHMMSS.tar.gz`
 
 Attach that archive to the bug report or troubleshooting thread before applying a runtime reset.
 
-## 10. Manual Compose Context
+## 11. Manual Compose Context
 
 For direct `docker compose` commands, export the runtime root and run from the compose directory:
 
@@ -164,7 +203,7 @@ export MOLTBOX_RUNTIME_ROOT="$HOME/.openclaw"
 cd ~/git/remram-gateway/moltbox/config
 ```
 
-## 11. Post-Install Validation Commands
+## 12. Post-Install Validation Commands
 
 Check container state:
 
@@ -185,7 +224,18 @@ curl http://127.0.0.1:18789/healthz
 curl http://127.0.0.1:18789/readyz
 ```
 
-## 12. Verify the Gateway Token
+Confirm runtime provider configuration:
+
+```bash
+grep '^TOGETHER_API_KEY=' ~/.openclaw/container.env
+docker exec moltbox-openclaw openclaw config get models.providers.ollama.baseUrl
+docker exec moltbox-openclaw openclaw config get agents.defaults.model.primary
+docker exec moltbox-openclaw openclaw config get agents.defaults.model.fallbacks[0]
+docker exec moltbox-openclaw openclaw models list --all --provider ollama
+docker exec moltbox-openclaw openclaw models status
+```
+
+## 13. Verify the Gateway Token
 
 Read the token from the runtime env file:
 
@@ -214,7 +264,7 @@ bash ./scripts/20-bootstrap.sh
 
 This forces the stack to reconcile against the current runtime files in `~/.openclaw`.
 
-## 13. Reset Runtime State Without Reinstalling
+## 14. Reset Runtime State Without Reinstalling
 
 If runtime configuration, agent state, or session data become corrupted, use the runtime reset tool instead of reinstalling the host:
 
@@ -238,7 +288,7 @@ bash ./scripts/20-bootstrap.sh
 bash ./scripts/30-validate.sh
 ```
 
-## 14. Open the Gateway and Send the First Chat
+## 15. Open the Gateway and Send the First Chat
 
 Get the host LAN IP:
 
@@ -252,10 +302,11 @@ Open OpenClaw:
 
 - On the Moltbox machine: `http://127.0.0.1:18789`
 - From another LAN device: `http://<MOLTBOX_LAN_IP>:18789`
+- From another LAN device by hostname when local DNS works: `http://<MOLTBOX_HOSTNAME>:18789`
 
 When prompted, enter the token from `~/.openclaw/.env` and send the first message.
 
-## 15. Remote Development Workflow
+## 16. Remote Development Workflow
 
 Recommended tooling:
 
@@ -285,6 +336,8 @@ For live runtime edits, also open:
 This avoids SCP and lets you edit:
 
 - `~/.openclaw/.env`
+- `~/.openclaw/container.env`
+- `~/.openclaw/openclaw.json`
 - `~/.openclaw/model-runtime.yml`
 - `~/git/remram-gateway/moltbox/config/docker-compose.yml`
 - repository templates under `~/git/remram-gateway/moltbox/`
