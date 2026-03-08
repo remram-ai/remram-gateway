@@ -13,9 +13,11 @@ from typing import Any, Callable
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
-from mcp.server.fastmcp import FastMCP
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from mcp.server.fastmcp import Context, FastMCP
 from starlette.routing import Mount
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from .jobs import JobStore
 from .redaction import redact_text
@@ -37,6 +39,13 @@ MUTATING_OPERATIONS = {
     "patch_repo",
     "run_bootstrap",
 }
+TRUSTED_HOSTS = [
+    "localhost",
+    "127.0.0.1",
+    "moltbox-prime",
+    "moltbox-prime.local",
+    "*.local",
+]
 
 
 class MoltboxDebugService:
@@ -54,26 +63,28 @@ class MoltboxDebugService:
             json_response=True,
         )
         self.mcp.settings.streamable_http_path = "/"
+        self.mcp.settings.host = "0.0.0.0"
+        self.mcp.settings.port = self.config.port
         self._register_tools()
 
     def _register_tools(self) -> None:
         @self.mcp.tool()
-        async def runtime_status(runtime: str = "prod", ctx: Any | None = None) -> dict:
+        async def runtime_status(runtime: str = "prod", ctx: Context | None = None) -> dict:
             self._enforce_scope(ctx, "runtime_status")
             return self._runtime_status(runtime)
 
         @self.mcp.tool()
-        async def logs_openclaw(runtime: str = "prod", tail_lines: int = 200, ctx: Any | None = None) -> dict:
+        async def logs_openclaw(runtime: str = "prod", tail_lines: int = 200, ctx: Context | None = None) -> dict:
             self._enforce_scope(ctx, "logs_openclaw")
             return self._logs(runtime, "openclaw", tail_lines)
 
         @self.mcp.tool()
-        async def logs_ollama(runtime: str = "prod", tail_lines: int = 200, ctx: Any | None = None) -> dict:
+        async def logs_ollama(runtime: str = "prod", tail_lines: int = 200, ctx: Context | None = None) -> dict:
             self._enforce_scope(ctx, "logs_ollama")
             return self._logs(runtime, "ollama", tail_lines)
 
         @self.mcp.tool()
-        async def logs_opensearch(runtime: str = "prod", tail_lines: int = 200, ctx: Any | None = None) -> dict:
+        async def logs_opensearch(runtime: str = "prod", tail_lines: int = 200, ctx: Context | None = None) -> dict:
             self._enforce_scope(ctx, "logs_opensearch")
             return self._logs(runtime, "opensearch", tail_lines)
 
@@ -83,18 +94,18 @@ class MoltboxDebugService:
             service: str = "openclaw",
             tail_lines: int = 200,
             since_seconds: int | None = None,
-            ctx: Any | None = None,
+            ctx: Context | None = None,
         ) -> dict:
             self._enforce_scope(ctx, "tail_logs")
             return self._logs(runtime, service, tail_lines, since_seconds)
 
         @self.mcp.tool()
-        async def job_status(job_id: str, ctx: Any | None = None) -> dict:
+        async def job_status(job_id: str, ctx: Context | None = None) -> dict:
             self._enforce_scope(ctx, "job_status")
             return self.jobs.get(job_id)
 
         @self.mcp.tool()
-        async def job_output(job_id: str, tail_lines: int = 200, ctx: Any | None = None) -> dict:
+        async def job_output(job_id: str, tail_lines: int = 200, ctx: Context | None = None) -> dict:
             self._enforce_scope(ctx, "job_output")
             return self.jobs.tail_output(job_id, max(1, min(tail_lines, self.config.max_log_lines)))
 
@@ -102,57 +113,57 @@ class MoltboxDebugService:
             operation: str,
             runtime: str,
             handler: Callable[[str], dict],
-            ctx: Any | None,
+            ctx: Context | None,
         ) -> dict:
             self._enforce_scope(ctx, operation)
             return self._submit_async(operation, runtime, handler)
 
         @self.mcp.tool()
-        async def openclaw_doctor(runtime: str = "prod", ctx: Any | None = None) -> dict:
+        async def openclaw_doctor(runtime: str = "prod", ctx: Context | None = None) -> dict:
             return await launch("openclaw_doctor", runtime, lambda job_id: self._openclaw_doctor(runtime, job_id), ctx)
 
         @self.mcp.tool()
-        async def validate_stack(runtime: str = "prod", ctx: Any | None = None) -> dict:
+        async def validate_stack(runtime: str = "prod", ctx: Context | None = None) -> dict:
             return await launch("validate_stack", runtime, lambda job_id: self._run_script(runtime, "30-validate.sh", job_id, "validate_stack"), ctx)
 
         @self.mcp.tool()
-        async def collect_diagnostics(runtime: str = "prod", ctx: Any | None = None) -> dict:
+        async def collect_diagnostics(runtime: str = "prod", ctx: Context | None = None) -> dict:
             return await launch("collect_diagnostics", runtime, lambda job_id: self._collect_diagnostics(runtime, job_id), ctx)
 
         @self.mcp.tool()
-        async def start_stack(runtime: str = "prod", ctx: Any | None = None) -> dict:
+        async def start_stack(runtime: str = "prod", ctx: Context | None = None) -> dict:
             return await launch("start_stack", runtime, lambda job_id: self._start_stack(runtime, job_id), ctx)
 
         @self.mcp.tool()
-        async def stop_stack(runtime: str = "prod", ctx: Any | None = None) -> dict:
+        async def stop_stack(runtime: str = "prod", ctx: Context | None = None) -> dict:
             return await launch("stop_stack", runtime, lambda job_id: self._stop_stack(runtime, job_id), ctx)
 
         @self.mcp.tool()
-        async def restart_stack(runtime: str = "prod", ctx: Any | None = None) -> dict:
+        async def restart_stack(runtime: str = "prod", ctx: Context | None = None) -> dict:
             return await launch("restart_stack", runtime, lambda job_id: self._restart_stack(runtime, job_id), ctx)
 
         @self.mcp.tool()
-        async def create_test_runtime(force_recreate: bool = False, ctx: Any | None = None) -> dict:
+        async def create_test_runtime(force_recreate: bool = False, ctx: Context | None = None) -> dict:
             return await launch("create_test_runtime", "test", lambda job_id: self._create_test_runtime(force_recreate, job_id), ctx)
 
         @self.mcp.tool()
-        async def start_test_stack(ctx: Any | None = None) -> dict:
+        async def start_test_stack(ctx: Context | None = None) -> dict:
             return await launch("start_test_stack", "test", lambda job_id: self._start_stack("test", job_id), ctx)
 
         @self.mcp.tool()
-        async def destroy_test_stack(force: bool = False, ctx: Any | None = None) -> dict:
+        async def destroy_test_stack(force: bool = False, ctx: Context | None = None) -> dict:
             return await launch("destroy_test_stack", "test", lambda job_id: self._destroy_test_runtime(force, job_id), ctx)
 
         @self.mcp.tool()
-        async def backup_runtime(runtime: str = "prod", include_logs: bool = True, ctx: Any | None = None) -> dict:
+        async def backup_runtime(runtime: str = "prod", include_logs: bool = True, ctx: Context | None = None) -> dict:
             return await launch("backup_runtime", runtime, lambda job_id: self._backup_runtime(runtime, include_logs, job_id), ctx)
 
         @self.mcp.tool()
-        async def patch_repo(patch: str, runtime: str = "test", ctx: Any | None = None) -> dict:
+        async def patch_repo(patch: str, runtime: str = "test", ctx: Context | None = None) -> dict:
             return await launch("patch_repo", runtime, lambda job_id: self._patch_repo(runtime, patch, job_id), ctx)
 
         @self.mcp.tool()
-        async def run_bootstrap(runtime: str = "prod", ctx: Any | None = None) -> dict:
+        async def run_bootstrap(runtime: str = "prod", ctx: Context | None = None) -> dict:
             return await launch("run_bootstrap", runtime, lambda job_id: self._run_script(runtime, "20-bootstrap.sh", job_id, "run_bootstrap"), ctx)
 
     def create_app(self) -> FastAPI:
@@ -162,13 +173,21 @@ class MoltboxDebugService:
                 yield
 
         app = FastAPI(title="Moltbox Debug Service", lifespan=lifespan)
+        app.add_middleware(ProxyHeadersMiddleware)
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=TRUSTED_HOSTS)
 
         @app.middleware("http")
         async def auth_middleware(request: Request, call_next: Callable):
-            if request.url.path in {"/healthz", "/readyz"}:
+            if request.url.path in {"/health", "/healthz", "/readyz"}:
                 return await call_next(request)
-            self._authenticate_request(request)
+            auth_result = self._authenticate_request(request)
+            if auth_result is not None:
+                return auth_result
             return await call_next(request)
+
+        @app.get("/health")
+        async def health() -> dict:
+            return {"status": "ok"}
 
         @app.get("/healthz")
         async def healthz() -> dict:
@@ -179,8 +198,7 @@ class MoltboxDebugService:
             return {"ok": True, "runtime_root": str(self.runtime.runtime_root)}
 
         @app.get("/artifacts/{artifact_path:path}")
-        async def artifact(artifact_path: str, request: Request) -> FileResponse:
-            self._authenticate_request(request)
+        async def artifact(artifact_path: str) -> FileResponse:
             safe_path = (self.runtime.artifacts_dir / artifact_path).resolve()
             root = self.runtime.artifacts_dir.resolve()
             if not str(safe_path).startswith(str(root)) or not safe_path.is_file():
@@ -190,33 +208,34 @@ class MoltboxDebugService:
         app.router.routes.append(Mount("/mcp", app=self.mcp.streamable_http_app()))
         return app
 
-    def _authenticate_request(self, request: Request) -> None:
+    def _authenticate_request(self, request: Request) -> JSONResponse | None:
         runtime = self.runtime
         auth_header = request.headers.get("authorization", "")
         if not auth_header.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="missing bearer token")
+            return JSONResponse(status_code=401, content={"error": "missing bearer token"})
         token = auth_header[7:]
         if token != runtime.debug_service_token or not token:
-            raise HTTPException(status_code=401, detail="invalid token")
+            return JSONResponse(status_code=403, content={"error": "invalid token"})
 
         client_id = request.headers.get("x-moltbox-client", "").strip()
         if not client_id:
-            raise HTTPException(status_code=401, detail="missing client id")
+            return JSONResponse(status_code=401, content={"error": "missing client id"})
         rule = self.config.clients.get(client_id)
         if rule is None:
-            raise HTTPException(status_code=403, detail="unknown client")
+            return JSONResponse(status_code=403, content={"error": "unknown client"})
 
         host = request.client.host if request.client else ""
         if not source_ip_allowed(host, self.config.lan_cidr):
-            raise HTTPException(status_code=403, detail="source ip not allowed")
+            return JSONResponse(status_code=403, content={"error": "source ip not allowed"})
 
         origin = request.headers.get("origin")
         if origin:
             allowed_origins = set(rule.allowed_origins or tuple(runtime.allowed_origins))
             if origin not in allowed_origins:
-                raise HTTPException(status_code=403, detail="origin not allowed")
+                return JSONResponse(status_code=403, content={"error": "origin not allowed"})
 
         request.state.moltbox_client_id = client_id
+        return None
 
     def _enforce_scope(self, ctx: Any, operation: str) -> None:
         request_context = getattr(ctx, "request_context", None)
@@ -687,4 +706,10 @@ def build_service() -> MoltboxDebugService:
 
 def run_server(args: argparse.Namespace) -> None:
     service = build_service()
-    uvicorn.run(service.create_app(), host=args.host or service.config.host, port=args.port or service.config.port)
+    uvicorn.run(
+        service.create_app(),
+        host=args.host or "0.0.0.0",
+        port=args.port or service.config.port,
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+    )
