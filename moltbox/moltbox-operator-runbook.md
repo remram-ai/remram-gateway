@@ -156,6 +156,9 @@ Bootstrap performs the following:
 - starts the container stack
 - pre-pulls the local routing model
 - configures the OpenClaw Ollama provider and default/fallback models before gateway readiness checks
+- installs the managed Remram escalation prompt block into `~/.openclaw/workspace/AGENTS.md`
+- installs the `remram-escalate` plugin into `~/.openclaw/extensions/remram-escalate`
+- enables the `remram-escalate` plugin in OpenClaw
 - verifies OpenClaw can reach `http://ollama:11434/api/tags`
 - primes the Ollama model registry with `openclaw models list --all --provider ollama`
 - waits for gateway readiness
@@ -178,6 +181,9 @@ bash ./scripts/30-validate.sh
 - gateway endpoints
 - OpenClaw to Ollama connectivity
 - OpenClaw to OpenSearch connectivity
+- escalation prompt block installation
+- canonical schema mount inside the OpenClaw container
+- `remram-escalate` plugin installation and enabled state
 - internal-only port exposure policy
 
 Signal integration is optional for this checklist and does not block first web chat.
@@ -233,6 +239,58 @@ docker exec moltbox-openclaw openclaw config get agents.defaults.model.primary
 docker exec moltbox-openclaw openclaw config get agents.defaults.model.fallbacks[0]
 docker exec moltbox-openclaw openclaw models list --all --provider ollama
 docker exec moltbox-openclaw openclaw models status
+```
+
+## Escalation MVP
+
+The Remram escalation MVP keeps the existing main OpenClaw agent and adds one managed prompt block plus one tool plugin.
+
+Runtime flow:
+
+- the local model answers first by producing an internal decision object using the Remram packet `response` subset
+- the agent calls the `remram_escalate` tool with the user request and that decision
+- valid local answers return immediately
+- `status=escalate`, malformed decisions, schema validation failures, and unexpected tool errors all trigger the configured fallback reasoning model
+- the final user-visible answer includes a runtime footer with local/final model ids and token telemetry
+
+Verify installation:
+
+```bash
+grep -n 'REMRAM_ESCALATION_MVP' ~/.openclaw/workspace/AGENTS.md
+ls ~/.openclaw/extensions/remram-escalate
+docker exec moltbox-openclaw test -f /app/remram-gateway/schemas/remram-request-packet.schema.json
+docker exec moltbox-openclaw openclaw plugins info remram-escalate
+docker exec moltbox-openclaw openclaw config get plugins.entries.remram-escalate.enabled
+```
+
+Telemetry appears in the footer appended to the final assistant answer, for example:
+
+```text
+---
+Runtime
+Local model: qwen3-moltbox
+Local tokens: 412 -> 136
+Escalation: yes
+Final model: together/deepseek-ai/DeepSeek-R1
+Final tokens: 921 -> 312
+-----------------------
+```
+
+Disable the feature:
+
+```bash
+docker exec moltbox-openclaw openclaw plugins disable remram-escalate
+export MOLTBOX_RUNTIME_ROOT="$HOME/.openclaw"
+cd ~/git/remram-gateway/moltbox/config
+docker compose --env-file "$MOLTBOX_RUNTIME_ROOT/.env" restart openclaw
+```
+
+Reset or reapply the feature:
+
+```bash
+cd ~/git/remram-gateway/moltbox
+bash ./scripts/20-bootstrap.sh
+bash ./scripts/30-validate.sh
 ```
 
 ## 13. Verify the Gateway Token

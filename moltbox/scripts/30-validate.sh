@@ -39,6 +39,11 @@ RUNTIME_AGENT_DIR="${RUNTIME_ROOT}/agents/main/agent"
 RUNTIME_MODELS_FILE="${RUNTIME_AGENT_DIR}/models.json"
 RUNTIME_AUTH_PROFILES_FILE="${RUNTIME_AGENT_DIR}/auth-profiles.json"
 RUNTIME_AGENT_CONFIG_FILE="${RUNTIME_AGENT_DIR}/agent-config.json"
+RUNTIME_WORKSPACE_AGENTS_FILE="${RUNTIME_ROOT}/workspace/AGENTS.md"
+RUNTIME_EXTENSION_DIR="${RUNTIME_ROOT}/extensions/remram-escalate"
+CONTAINER_SCHEMA_PATH="/app/remram-gateway/schemas/remram-request-packet.schema.json"
+PROMPT_BEGIN="<!-- REMRAM_ESCALATION_MVP:BEGIN -->"
+PROMPT_END="<!-- REMRAM_ESCALATION_MVP:END -->"
 
 docker_cmd() {
   if docker info >/dev/null 2>&1; then
@@ -275,6 +280,37 @@ check_openclaw_runtime_config() {
   check_openclaw_config_value "agents.defaults.model.fallbacks[0]" "together/${CLOUD_REASONING_MODEL}"
 }
 
+check_escalation_mvp_install() {
+  [[ -f "${RUNTIME_WORKSPACE_AGENTS_FILE}" ]] || {
+    log_error "Missing runtime prompt file: ${RUNTIME_WORKSPACE_AGENTS_FILE}"
+    exit 1
+  }
+
+  grep -F "${PROMPT_BEGIN}" "${RUNTIME_WORKSPACE_AGENTS_FILE}" >/dev/null || {
+    log_error "Missing escalation prompt begin marker in ${RUNTIME_WORKSPACE_AGENTS_FILE}"
+    exit 1
+  }
+
+  grep -F "${PROMPT_END}" "${RUNTIME_WORKSPACE_AGENTS_FILE}" >/dev/null || {
+    log_error "Missing escalation prompt end marker in ${RUNTIME_WORKSPACE_AGENTS_FILE}"
+    exit 1
+  }
+
+  [[ -f "${RUNTIME_EXTENSION_DIR}/openclaw.plugin.json" ]] || {
+    log_error "Missing runtime plugin manifest: ${RUNTIME_EXTENSION_DIR}/openclaw.plugin.json"
+    exit 1
+  }
+
+  [[ -f "${RUNTIME_EXTENSION_DIR}/index.ts" ]] || {
+    log_error "Missing runtime plugin entrypoint: ${RUNTIME_EXTENSION_DIR}/index.ts"
+    exit 1
+  }
+
+  compose exec -T openclaw test -f "${CONTAINER_SCHEMA_PATH}"
+  openclaw_exec plugins info remram-escalate >/dev/null
+  check_openclaw_config_value "plugins.entries.remram-escalate.enabled" "true"
+}
+
 check_provider_auth() {
   log_info "Checking configured provider auth state."
   openclaw_exec models status --check >/dev/null
@@ -339,6 +375,7 @@ main() {
   check_internal_connectivity
   check_openclaw_runtime_mounts
   check_openclaw_runtime_config
+  check_escalation_mvp_install
   check_agent_runtime_files
   check_ollama_model_installed
   check_ollama_model_registry

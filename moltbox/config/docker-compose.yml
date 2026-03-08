@@ -25,6 +25,8 @@ services:
       - "${MOLTBOX_RUNTIME_ROOT:-$HOME/.openclaw}:/home/node/.openclaw"
       # Tiered model routing policy is loaded from runtime config.
       - "${MOLTBOX_RUNTIME_ROOT:-$HOME/.openclaw}/model-runtime.yml:/app/config/model-runtime.yml:ro"
+      # Canonical Remram packet schema is mounted read-only from the repository.
+      - "../../schemas:/app/remram-gateway/schemas:ro"
     networks:
       - moltbox_internal
     command:

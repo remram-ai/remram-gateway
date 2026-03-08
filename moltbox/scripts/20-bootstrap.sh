@@ -22,6 +22,8 @@ ENV_TEMPLATE="${CONFIG_DIR}/.env.example"
 CONTAINER_ENV_TEMPLATE="${CONFIG_DIR}/container.env.example"
 MODEL_RUNTIME_TEMPLATE="${CONFIG_DIR}/model-runtime.yml"
 OPENSEARCH_TEMPLATE="${CONFIG_DIR}/opensearch.yml"
+ESCALATION_INSTALL_SCRIPT="${SCRIPT_DIR}/install-escalation-agent.sh"
+CANONICAL_SCHEMA_FILE="${REPO_ROOT}/schemas/remram-request-packet.schema.json"
 OPENCLAW_REDACTED_SECRET="__OPENCLAW_REDACTED__"
 
 resolve_runtime_root() {
@@ -699,6 +701,17 @@ probe_together_provider() {
   openclaw_exec models status --probe --probe-provider together --probe-concurrency 1 --probe-timeout 10000 --probe-max-tokens 8 >/dev/null
 }
 
+install_escalation_agent() {
+  log_info "Installing Remram escalation MVP into runtime."
+  env "MOLTBOX_RUNTIME_ROOT=${RUNTIME_ROOT}" bash "${ESCALATION_INSTALL_SCRIPT}"
+}
+
+verify_escalation_agent() {
+  log_info "Validating remram-escalate plugin discovery and enablement."
+  openclaw_exec plugins info remram-escalate >/dev/null
+  verify_openclaw_config_value "plugins.entries.remram-escalate.enabled" "true"
+}
+
 wait_for_gateway() {
   local port="${GATEWAY_PORT:-18789}"
   local sleep_seconds="${BOOTSTRAP_WAIT_INTERVAL_SECONDS:-2}"
@@ -726,6 +739,8 @@ main() {
   require_host_cmd curl
   require_host_cmd python3
   require_file "${COMPOSE_FILE}"
+  require_file "${ESCALATION_INSTALL_SCRIPT}"
+  require_file "${CANONICAL_SCHEMA_FILE}"
   ensure_runtime_root_safe
   enforce_runtime_outside_git_workspace
   log_info "Repository root: ${REPO_ROOT}"
@@ -753,7 +768,12 @@ main() {
   assert_ollama_model_pulled
   wait_for_openclaw_container
   configure_gateway_runtime
+  install_escalation_agent
+  compose restart openclaw >/dev/null
+  wait_for_openclaw_container
+  install_escalation_agent
   verify_openclaw_runtime_config
+  verify_escalation_agent
   wait_for_gateway
   assert_openclaw_can_reach_ollama
   prime_model_registry
