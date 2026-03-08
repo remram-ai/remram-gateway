@@ -22,6 +22,7 @@ ENV_TEMPLATE="${CONFIG_DIR}/.env.example"
 CONTAINER_ENV_TEMPLATE="${CONFIG_DIR}/container.env.example"
 MODEL_RUNTIME_TEMPLATE="${CONFIG_DIR}/model-runtime.yml"
 OPENSEARCH_TEMPLATE="${CONFIG_DIR}/opensearch.yml"
+OPENCLAW_REDACTED_SECRET="__OPENCLAW_REDACTED__"
 
 resolve_runtime_root() {
   local target_user="${SUDO_USER:-${USER}}"
@@ -336,9 +337,13 @@ gateway_port = sys.argv[4]
 
 required_origins = [
     f"http://127.0.0.1:{gateway_port}",
+    f"https://127.0.0.1:{gateway_port}",
     f"http://localhost:{gateway_port}",
+    f"https://localhost:{gateway_port}",
     f"http://{host_ip}:{gateway_port}",
+    f"https://{host_ip}:{gateway_port}",
     f"http://{host_name}:{gateway_port}",
+    f"https://{host_name}:{gateway_port}",
 ]
 
 try:
@@ -638,7 +643,7 @@ assert_ollama_model_registered() {
 }
 
 assert_openclaw_can_reach_ollama() {
-  log_info "Checking OpenClaw -> Ollama native API reachability with curl."
+  log_info "Checking OpenClaw -> Ollama native API reachability with curl before model registration."
   compose exec -T openclaw curl -fsS "${OLLAMA_BASE_URL}/api/tags" >/dev/null
 }
 
@@ -655,11 +660,17 @@ configure_gateway_runtime() {
 verify_openclaw_config_value() {
   local path="$1"
   local expected="$2"
+  local allow_redacted="${3:-false}"
   local actual=""
 
   if ! actual="$(openclaw_exec config get "${path}" 2>/dev/null)"; then
     log_error "Failed to read OpenClaw config path: ${path}"
     return 1
+  fi
+
+  if [[ "${allow_redacted}" == "true" && "${actual}" == "${OPENCLAW_REDACTED_SECRET}" ]]; then
+    log_info "Skipping drift validation for redacted secret"
+    return 0
   fi
 
   if [[ "${actual}" != "${expected}" ]]; then
@@ -669,8 +680,9 @@ verify_openclaw_config_value() {
 }
 
 verify_openclaw_runtime_config() {
+  log_info "Validating OpenClaw provider configuration"
   verify_openclaw_config_value "gateway.mode" "local"
-  verify_openclaw_config_value "models.providers.ollama.apiKey" "ollama-local"
+  verify_openclaw_config_value "models.providers.ollama.apiKey" "ollama-local" "true"
   verify_openclaw_config_value "models.providers.ollama.baseUrl" "${OLLAMA_BASE_URL}"
   verify_openclaw_config_value "models.providers.ollama.api" "ollama"
   verify_openclaw_config_value "agents.defaults.model.primary" "ollama/${LOCAL_ROUTING_MODEL}"
@@ -678,7 +690,7 @@ verify_openclaw_runtime_config() {
 }
 
 prime_model_registry() {
-  log_info "Priming OpenClaw model registry."
+  log_info "Priming OpenClaw model registry from Ollama discovery."
   openclaw_exec models list --all --provider ollama >/dev/null
 }
 

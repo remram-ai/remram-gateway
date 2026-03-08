@@ -15,6 +15,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOLTBOX_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_DIR="${MOLTBOX_DIR}/config"
 COMPOSE_FILE="${CONFIG_DIR}/docker-compose.yml"
+OPENCLAW_REDACTED_SECRET="__OPENCLAW_REDACTED__"
 
 resolve_runtime_root() {
   local target_user="${SUDO_USER:-${USER}}"
@@ -231,11 +232,17 @@ check_ollama_model_installed() {
 check_openclaw_config_value() {
   local path="$1"
   local expected="$2"
+  local allow_redacted="${3:-false}"
   local actual=""
 
   if ! actual="$(openclaw_exec config get "${path}" 2>/dev/null)"; then
     log_error "Failed to read OpenClaw config path: ${path}"
     exit 1
+  fi
+
+  if [[ "${allow_redacted}" == "true" && "${actual}" == "${OPENCLAW_REDACTED_SECRET}" ]]; then
+    log_info "Skipping drift validation for redacted secret"
+    return 0
   fi
 
   if [[ "${actual}" != "${expected}" ]]; then
@@ -259,8 +266,9 @@ check_openclaw_runtime_mounts() {
 }
 
 check_openclaw_runtime_config() {
-  log_info "Checking OpenClaw runtime config convergence."
+  log_info "Validating OpenClaw provider configuration"
   check_openclaw_config_value "gateway.mode" "local"
+  check_openclaw_config_value "models.providers.ollama.apiKey" "ollama-local" "true"
   check_openclaw_config_value "models.providers.ollama.baseUrl" "${OLLAMA_BASE_URL}"
   check_openclaw_config_value "models.providers.ollama.api" "ollama"
   check_openclaw_config_value "agents.defaults.model.primary" "ollama/${LOCAL_ROUTING_MODEL}"
@@ -279,7 +287,7 @@ check_ollama_model_registry() {
   local model_ref="ollama/${LOCAL_ROUTING_MODEL}"
   local model_list=""
 
-  log_info "Checking OpenClaw model registry for ${model_ref}."
+  log_info "Checking Ollama discovery in the OpenClaw model registry for ${model_ref}."
   if ! model_list="$(openclaw_exec models list --all --provider ollama 2>&1)"; then
     log_error "Failed to read OpenClaw model registry."
     printf '%s\n' "${model_list}" >&2
