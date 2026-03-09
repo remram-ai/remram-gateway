@@ -29,6 +29,8 @@ TEST_GATEWAY_PORT = 18790
 TEST_DEBUG_SERVICE_PORT = 18891
 TEST_COMPOSE_PROJECT = "moltbox-test"
 ALLOWED_PATCH_PREFIXES = ("moltbox/", "schemas/")
+SNAPSHOT_TOOL = "/usr/local/bin/moltbox-snapshot"
+SNAPSHOT_ROOT = "/mnt/moltbox-backup/snapshots"
 SAFE_SCRIPT_MAP = {
     "runtime_reset": "12-runtime-reset.sh",
     "bootstrap": "20-bootstrap.sh",
@@ -43,6 +45,8 @@ MUTATING_OPERATIONS = {
     "start_test_stack",
     "destroy_test_stack",
     "backup_runtime",
+    "snapshot_runtime",
+    "restore_runtime_snapshot",
     "patch_repo",
     "run_bootstrap",
     "run_script",
@@ -135,6 +139,11 @@ class MoltboxDebugService:
             self._enforce_scope(ctx, "repo_status")
             return self._repo_status(runtime)
 
+        @self.mcp.tool(description="List available host snapshots under /mnt/moltbox-backup/snapshots.")
+        async def list_runtime_snapshots(ctx: Context | None = None) -> dict:
+            self._enforce_scope(ctx, "list_runtime_snapshots")
+            return self._list_runtime_snapshots()
+
         @self.mcp.tool(description="List allowlisted remote scripts available under moltbox/remote in the selected runtime repo.")
         async def list_remote_scripts(runtime: str = "prod", ctx: Context | None = None) -> dict:
             self._enforce_scope(ctx, "list_remote_scripts")
@@ -194,6 +203,10 @@ class MoltboxDebugService:
         async def backup_runtime(runtime: str = "prod", include_logs: bool = True, ctx: Context | None = None) -> dict:
             return await launch("backup_runtime", runtime, lambda job_id: self._backup_runtime(runtime, include_logs, job_id), ctx)
 
+        @self.mcp.tool(description="Create a host snapshot with sudo /usr/local/bin/moltbox-snapshot create before mutating Moltbox state.")
+        async def snapshot_runtime(ctx: Context | None = None) -> dict:
+            return await launch("snapshot_runtime", "prod", lambda job_id: self._snapshot_runtime(job_id), ctx)
+
         @self.mcp.tool(description="Apply a restricted unified diff patch to the disposable test worktree as an async job.")
         async def patch_repo(patch: str, runtime: str = "test", ctx: Context | None = None) -> dict:
             return await launch("patch_repo", runtime, lambda job_id: self._patch_repo(runtime, patch, job_id), ctx)
@@ -218,6 +231,10 @@ class MoltboxDebugService:
         @self.mcp.tool(description="Fetch and fast-forward pull the selected runtime repo from git as an async job.")
         async def repo_pull(runtime: str = "prod", branch: str | None = None, ctx: Context | None = None) -> dict:
             return await launch("repo_pull", runtime, lambda job_id: self._repo_pull(runtime, branch, job_id), ctx)
+
+        @self.mcp.tool(description="Restore a host snapshot folder with sudo /usr/local/bin/moltbox-snapshot restore as an async job.")
+        async def restore_runtime_snapshot(snapshot_folder: str, ctx: Context | None = None) -> dict:
+            return await launch("restore_runtime_snapshot", "prod", lambda job_id: self._restore_runtime_snapshot(snapshot_folder, job_id), ctx)
 
     def create_app(self) -> FastAPI:
         @contextlib.asynccontextmanager
@@ -450,6 +467,24 @@ class MoltboxDebugService:
             },
         }
 
+    def _list_runtime_snapshots(self) -> dict:
+        ctx = self._load_runtime("prod")
+        result = self._run_command(
+            ctx,
+            ["sudo", SNAPSHOT_TOOL, "list"],
+            timeout=self.config.default_timeout_seconds,
+            cwd=ctx.repo_root,
+        )
+        snapshots = [line.strip() for line in result["stdout"].splitlines() if line.strip()]
+        result.update(
+            {
+                "operation": "list_runtime_snapshots",
+                "runtime": "prod",
+                "details": {"snapshot_root": SNAPSHOT_ROOT, "snapshots": snapshots},
+            }
+        )
+        return result
+
     def _list_remote_scripts(self, runtime: str) -> dict:
         ctx = self._load_runtime(runtime)
         scripts: list[dict[str, Any]] = []
@@ -656,6 +691,23 @@ class MoltboxDebugService:
             "exit_code": 0,
         }
 
+    def _snapshot_runtime(self, job_id: str) -> dict:
+        ctx = self._load_runtime("prod")
+        result = self._run_command(
+            ctx,
+            ["sudo", SNAPSHOT_TOOL, "create"],
+            job_id=job_id,
+            timeout=self.config.long_timeout_seconds,
+            cwd=ctx.repo_root,
+        )
+        snapshot_path = self._extract_snapshot_path(result["stdout"])
+        if snapshot_path:
+            result["artifacts"] = [snapshot_path]
+        result["operation"] = "snapshot_runtime"
+        result["runtime"] = "prod"
+        result["details"] = {"snapshot_root": SNAPSHOT_ROOT, "snapshot_path": snapshot_path}
+        return result
+
     def _patch_repo(self, runtime: str, patch: str, job_id: str) -> dict:
         if runtime != "test":
             raise RuntimeError("patch_repo is limited to the test runtime")
@@ -717,6 +769,22 @@ class MoltboxDebugService:
         pulled["operation"] = "repo_pull"
         pulled["runtime"] = runtime
         return pulled
+
+    def _restore_runtime_snapshot(self, snapshot_folder: str, job_id: str) -> dict:
+        ctx = self._load_runtime("prod")
+        if not snapshot_folder or Path(snapshot_folder).name != snapshot_folder:
+            raise RuntimeError(f"Invalid snapshot folder: {snapshot_folder}")
+        result = self._run_command(
+            ctx,
+            ["sudo", SNAPSHOT_TOOL, "restore", snapshot_folder],
+            job_id=job_id,
+            timeout=self.config.long_timeout_seconds,
+            cwd=ctx.repo_root,
+        )
+        result["operation"] = "restore_runtime_snapshot"
+        result["runtime"] = "prod"
+        result["details"] = {"snapshot_root": SNAPSHOT_ROOT, "snapshot_folder": snapshot_folder}
+        return result
 
     def _validate_patch_paths(self, patch: str) -> None:
         if "GIT binary patch" in patch or "\x00" in patch:
@@ -842,6 +910,13 @@ class MoltboxDebugService:
         allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._/-")
         if not ref or any(char not in allowed for char in ref) or ".." in ref or ref.startswith("/") or ref.endswith("/"):
             raise RuntimeError(f"Invalid git ref: {ref}")
+
+    def _extract_snapshot_path(self, stdout: str) -> str | None:
+        for line in stdout.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(f"{SNAPSHOT_ROOT}/"):
+                return stripped
+        return None
 
     def _ensure_test_runtime_idle(self) -> None:
         prod = self._load_runtime("prod")
