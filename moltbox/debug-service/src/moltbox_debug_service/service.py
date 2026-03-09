@@ -1135,6 +1135,7 @@ class MoltboxDebugService:
             "env": env_summary,
             "gateway": {
                 "mode": gateway.get("mode") if isinstance(gateway, dict) else None,
+                "allow_insecure_auth": bool(control_ui.get("allowInsecureAuth")) if isinstance(control_ui, dict) else False,
                 "allowed_origins": [value for value in control_ui.get("allowedOrigins", []) if isinstance(value, str)] if isinstance(control_ui, dict) else [],
                 "trusted_proxies": [value for value in trusted_proxies if isinstance(value, str)] if isinstance(trusted_proxies, list) else [],
             },
@@ -1171,6 +1172,7 @@ class MoltboxDebugService:
         trusted_proxies = gateway.get("trustedProxies", []) if isinstance(gateway, dict) else []
         details = {
             "gateway_mode": gateway.get("mode") if isinstance(gateway, dict) else None,
+            "allow_insecure_auth": bool(control_ui.get("allowInsecureAuth")) if isinstance(control_ui, dict) else False,
             "allowed_origins": [value for value in control_ui.get("allowedOrigins", []) if isinstance(value, str)] if isinstance(control_ui, dict) else [],
             "trusted_proxies": [value for value in trusted_proxies if isinstance(value, str)] if isinstance(trusted_proxies, list) else [],
             "gateway_token_present": bool(ctx.env_values.get("OPENCLAW_GATEWAY_TOKEN")),
@@ -1800,6 +1802,9 @@ class MoltboxDebugService:
         existing = control_ui.get("allowedOrigins")
         if not isinstance(existing, list):
             existing = []
+        # Test publishes use plain HTTP on the disposable gateway port, so allow
+        # token-only auth there instead of requiring a browser secure context.
+        control_ui["allowInsecureAuth"] = True
         control_ui["allowedOrigins"] = self._build_test_allowed_origins(existing, prod)
         ctx.openclaw_config_file.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
