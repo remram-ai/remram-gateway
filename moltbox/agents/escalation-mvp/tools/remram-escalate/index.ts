@@ -6,6 +6,32 @@ const RUNTIME_ROOT = "/home/node/.openclaw";
 const SESSION_DIR = path.join(RUNTIME_ROOT, "agents", "main", "sessions");
 const OPENCLAW_CONFIG_PATH = path.join(RUNTIME_ROOT, "openclaw.json");
 const DEFAULT_TOGETHER_BASE_URL = "https://api.together.xyz/v1/chat/completions";
+const ESCALATION_SYSTEM_CONTEXT = `## Remram Escalation MVP
+
+For every user request, first produce an internal decision object using the Remram Request Packet response subset:
+
+\`\`\`json
+{
+  "response": {
+    "status": "answer | escalate",
+    "answer": "string when answering locally",
+    "status_message": "short explanation"
+  }
+}
+\`\`\`
+
+Rules:
+- \`response.status\` must be either \`answer\` or \`escalate\`.
+- Prefer answering locally when confident.
+- If the task is uncertain, deep, or difficult, set \`status\` to \`escalate\`.
+- Do not refuse tasks. Escalate instead of refusing.
+- After forming the decision, call the tool \`remram_escalate\` exactly once with:
+  - \`user_request\`
+  - \`decision\`
+- Never show the raw decision JSON to the user.
+- If the tool returns text content, output that text exactly as returned.
+- If the tool returns a \`trace\` object, ensure the user sees the trace information as part of the final answer.
+- Do not add any text before or after the tool-provided output.`;
 
 type Decision = {
   response?: {
@@ -429,7 +455,7 @@ async function callBestEffortLocal(userRequest: string): Promise<ModelAnswer> {
 function buildFooter(telemetry: Telemetry) {
   const lines = [
     "---",
-    "Runtime",
+    "Trace",
     `Local model: ${telemetry.local_model}`,
     `Local tokens: ${telemetry.local_input_tokens} -> ${telemetry.local_output_tokens}`,
   ];
@@ -451,10 +477,32 @@ function buildFooter(telemetry: Telemetry) {
 }
 
 function buildResult(finalAnswer: string, telemetry: Telemetry) {
+  const footer = buildFooter(telemetry);
+  const text = `${finalAnswer.trim()}\n\n${footer}`;
+  const trace = {
+    local_model: telemetry.local_model,
+    local_tokens: {
+      input: telemetry.local_input_tokens,
+      output: telemetry.local_output_tokens,
+    },
+    local_duration_ms: telemetry.local_duration_ms,
+    escalated: telemetry.escalated,
+    final_model: telemetry.final_model,
+    final_tokens: {
+      input: telemetry.final_input_tokens,
+      output: telemetry.final_output_tokens,
+    },
+    final_latency_ms: telemetry.final_latency_ms,
+  };
   return {
-    final_answer: finalAnswer.trim(),
-    footer: buildFooter(telemetry),
+    content: [{ type: "text", text }],
     telemetry,
+    trace,
+    details: {
+      final_answer: finalAnswer.trim(),
+      footer,
+      trace,
+    },
   };
 }
 
@@ -472,6 +520,14 @@ function validationFailureReason(errors: string[]) {
 }
 
 export default function register(api: any) {
+  api.on(
+    "before_prompt_build",
+    () => ({
+      appendSystemContext: ESCALATION_SYSTEM_CONTEXT,
+    }),
+    { priority: 100 },
+  );
+
   api.registerTool({
     name: "remram_escalate",
     description:
@@ -485,7 +541,11 @@ export default function register(api: any) {
         decision: {},
       },
     },
-    handler: async ({ user_request, decision }: { user_request: string; decision: unknown }, context: any) => {
+    async execute(
+      _toolCallId: string,
+      { user_request, decision }: { user_request: string; decision: unknown },
+      context?: any,
+    ) {
       const localTelemetry = await extractLocalTelemetry(context);
       const validateResponse = await compileResponseValidator();
 

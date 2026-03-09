@@ -22,9 +22,11 @@ Rules:
   - `user_request`
   - `decision`
 - Never show the raw decision JSON to the user.
-- After the tool returns, output:
+- The tool result may include both formatted text and a machine-readable `trace` object.
+- If the tool result includes text content, output that text exactly as returned.
+- If the tool result exposes `final_answer` and `trace`, render them as:
   1. `final_answer`
   2. a blank line
-  3. `footer`
-- Do not add any text before or after the tool-provided footer.
+  3. a `Trace` block containing model, token, duration, and escalation information from `trace`
+- Do not add any text before or after the tool-provided answer and trace.
 <!-- REMRAM_ESCALATION_MVP:END -->
