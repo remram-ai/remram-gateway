@@ -190,7 +190,32 @@ bash ./scripts/30-validate.sh
 
 Signal integration is optional for this checklist and does not block first web chat.
 
-## 10. Collect a Diagnostics Bundle Before Troubleshooting
+## 10. Create a Host Snapshot Before Mutating Moltbox State
+
+Before any host-side mutation, runtime config change, bootstrap rerun, reset workflow, service install, or automated test that can change the live Moltbox environment, create a host snapshot first:
+
+```bash
+sudo /usr/local/bin/moltbox-snapshot create
+sudo /usr/local/bin/moltbox-snapshot list
+```
+
+The snapshot tool writes timestamped rollback points under:
+
+```text
+/mnt/moltbox-backup/snapshots
+```
+
+Treat the newest snapshot folder as the rollback point for the current task.
+
+Snapshot restore uses:
+
+```bash
+sudo /usr/local/bin/moltbox-snapshot restore <snapshot-id>
+```
+
+This restores the live runtime from the selected snapshot and restarts the Moltbox stack.
+
+## 11. Collect a Diagnostics Bundle Before Troubleshooting
 
 When the appliance is unhealthy but still has enough state to inspect, collect the official debug bundle before making manual changes:
 
@@ -200,9 +225,11 @@ bash ./scripts/99-diagnostics.sh
 
 This writes a timestamped archive to `/tmp/moltbox-debug-YYYYMMDD-HHMMSS.tar.gz` and prints an `scp` command for downloading it to your workstation.
 
+This diagnostics bundle is not a rollback snapshot.
+
 Attach that archive to the bug report or troubleshooting thread before applying a runtime reset.
 
-## 10a. Install The Moltbox Debug Service
+## 11a. Install The Moltbox Debug Service
 
 Install the host-level MCP debug service after bootstrap has created `~/.openclaw`:
 
@@ -225,7 +252,7 @@ bash ./scripts/70-debug-service.sh status
 bash ./scripts/70-debug-service.sh logs
 ```
 
-## 11. Manual Compose Context
+## 12. Manual Compose Context
 
 For direct `docker compose` commands, export the runtime root and run from the compose directory:
 
@@ -234,7 +261,7 @@ export MOLTBOX_RUNTIME_ROOT="$HOME/.openclaw"
 cd ~/git/remram-gateway/moltbox/config
 ```
 
-## 12. Post-Install Validation Commands
+## 13. Post-Install Validation Commands
 
 Check container state:
 

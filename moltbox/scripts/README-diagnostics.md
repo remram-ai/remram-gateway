@@ -2,6 +2,15 @@
 
 `scripts/99-diagnostics.sh` is the official Moltbox debug bundle generator. Run it before troubleshooting so a bug report includes the current host, container, runtime, and model state.
 
+It is not the rollback snapshot mechanism.
+
+For rollback points before mutating host or runtime state, use the host snapshot tool instead:
+
+```bash
+sudo /usr/local/bin/moltbox-snapshot create
+sudo /usr/local/bin/moltbox-snapshot list
+```
+
 ## What It Collects
 
 - `system/`: `uname -a`, `/etc/os-release`, `uptime`, `df -h`, `free -h`, `ip addr`, `ss -tulpn`, and `ps aux`

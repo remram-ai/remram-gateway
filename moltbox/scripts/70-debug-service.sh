@@ -10,9 +10,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOLTBOX_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${MOLTBOX_DIR}/.." && pwd)"
 SERVICE_DIR="${MOLTBOX_DIR}/debug-service"
+HOST_BIN_DIR="${MOLTBOX_DIR}/bin"
 SYSTEMD_TEMPLATE="${MOLTBOX_DIR}/systemd/moltbox-debug-service.service"
 DEBUG_CONFIG_TEMPLATE="${MOLTBOX_DIR}/config/debug-service.config.json.example"
 DEBUG_CLIENTS_TEMPLATE="${MOLTBOX_DIR}/config/debug-service.clients.json.example"
+SNAPSHOT_TOOL_SOURCE="${HOST_BIN_DIR}/moltbox-snapshot"
+SNAPSHOT_TOOL_TARGET="/usr/local/bin/moltbox-snapshot"
 TARGET_USER="${SUDO_USER:-${USER}}"
 TARGET_HOME="$(getent passwd "${TARGET_USER}" | cut -d: -f6 2>/dev/null || printf '%s\n' "${HOME}")"
 RUNTIME_ROOT="${MOLTBOX_RUNTIME_ROOT:-${TARGET_HOME}/.openclaw}"
@@ -34,6 +37,12 @@ require_file() {
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || { log_error "Required command not found: $1"; exit 1; }
+}
+
+install_host_tools() {
+  require_file "${SNAPSHOT_TOOL_SOURCE}"
+  require_cmd sudo
+  sudo install -m 0755 "${SNAPSHOT_TOOL_SOURCE}" "${SNAPSHOT_TOOL_TARGET}"
 }
 
 ensure_runtime_templates() {
@@ -92,6 +101,7 @@ install_service() {
   require_file "${DEBUG_CLIENTS_TEMPLATE}"
   ensure_runtime_templates
   ensure_runtime_token
+  install_host_tools
   install_venv
   install_unit
   log_info "Installed Moltbox debug service."
@@ -109,7 +119,11 @@ main() {
     install)
       install_service
       ;;
-    start|stop|restart|status)
+    start|restart)
+      install_host_tools
+      service_cmd "${action}"
+      ;;
+    stop|status)
       service_cmd "${action}"
       ;;
     logs)
