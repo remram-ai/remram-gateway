@@ -31,6 +31,7 @@ from .runtime import RuntimeContext, build_runtime, ensure_runtime_dirs, load_js
 TEST_GATEWAY_PORT = 18790
 TEST_DEBUG_SERVICE_PORT = 18891
 TEST_COMPOSE_PROJECT = "moltbox-test"
+TEST_CONTROL_UI_HOSTS = ("moltbox-test",)
 ALLOWED_PATCH_PREFIXES = ("moltbox/", "schemas/")
 SNAPSHOT_TOOL = "/usr/local/bin/moltbox-snapshot"
 SNAPSHOT_ROOT = "/mnt/moltbox-backup/snapshots"
@@ -1905,6 +1906,10 @@ class MoltboxDebugService:
                 hosts.append(parsed.hostname)
 
         for host in ("127.0.0.1", "localhost"):
+            if host not in hosts:
+                hosts.append(host)
+
+        for host in TEST_CONTROL_UI_HOSTS:
             if host not in hosts:
                 hosts.append(host)
 
