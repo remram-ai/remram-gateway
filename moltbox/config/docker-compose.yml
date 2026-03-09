@@ -3,7 +3,7 @@
 services:
   openclaw:
     image: "${OPENCLAW_IMAGE:-openclaw:local}"
-    container_name: "moltbox-openclaw"
+    container_name: "${OPENCLAW_CONTAINER_NAME:-moltbox-openclaw}"
     restart: unless-stopped
     init: true
     env_file:
@@ -25,6 +25,8 @@ services:
       - "${MOLTBOX_RUNTIME_ROOT:-$HOME/.openclaw}:/home/node/.openclaw"
       # Tiered model routing policy is loaded from runtime config.
       - "${MOLTBOX_RUNTIME_ROOT:-$HOME/.openclaw}/model-runtime.yml:/app/config/model-runtime.yml:ro"
+      # Canonical Remram packet schema is mounted read-only from the repository.
+      - "../../schemas:/app/remram-gateway/schemas:ro"
     networks:
       - moltbox_internal
     command:
@@ -52,7 +54,7 @@ services:
 
   ollama:
     image: "${OLLAMA_IMAGE:-ollama/ollama:0.6.8}"
-    container_name: "moltbox-ollama"
+    container_name: "${OLLAMA_CONTAINER_NAME:-moltbox-ollama}"
     restart: unless-stopped
     env_file:
       - "${MOLTBOX_RUNTIME_ROOT:-$HOME/.openclaw}/.env"
@@ -73,7 +75,7 @@ services:
 
   opensearch:
     image: "${OPENSEARCH_IMAGE:-opensearchproject/opensearch:2.18.0}"
-    container_name: "moltbox-opensearch"
+    container_name: "${OPENSEARCH_CONTAINER_NAME:-moltbox-opensearch}"
     restart: unless-stopped
     env_file:
       - "${MOLTBOX_RUNTIME_ROOT:-$HOME/.openclaw}/.env"

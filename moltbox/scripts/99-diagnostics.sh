@@ -38,6 +38,25 @@ TARGET_USER="$(resolve_target_user)"
 TARGET_HOME="$(resolve_target_home "${TARGET_USER}")"
 RUNTIME_ROOT="${MOLTBOX_RUNTIME_ROOT:-${TARGET_HOME}/.openclaw}"
 RUNTIME_ENV_FILE="${RUNTIME_ROOT}/.env"
+read_env_value() {
+  local key="$1"
+  local default_value="$2"
+  if [[ -f "${RUNTIME_ENV_FILE}" ]]; then
+    local matched
+    matched="$(grep -E "^${key}=" "${RUNTIME_ENV_FILE}" | head -n1 | cut -d= -f2- || true)"
+    matched="${matched%$'\r'}"
+    if [[ -n "${matched}" ]]; then
+      printf '%s\n' "${matched}"
+      return
+    fi
+  fi
+  printf '%s\n' "${default_value}"
+}
+
+OPENCLAW_CONTAINER_NAME="$(read_env_value "OPENCLAW_CONTAINER_NAME" "moltbox-openclaw")"
+OLLAMA_CONTAINER_NAME="$(read_env_value "OLLAMA_CONTAINER_NAME" "moltbox-ollama")"
+OPENSEARCH_CONTAINER_NAME="$(read_env_value "OPENSEARCH_CONTAINER_NAME" "moltbox-opensearch")"
+COMPOSE_PROJECT_NAME_VALUE="$(read_env_value "COMPOSE_PROJECT_NAME" "moltbox")"
 PREFERRED_CONFIG_DIR="${TARGET_HOME}/git/remram-gateway/moltbox/config"
 REPO_CONFIG_SOURCE="${CONFIG_DIR}"
 if [[ -d "${PREFERRED_CONFIG_DIR}" ]]; then
@@ -244,7 +263,7 @@ capture_docker_diagnostics() {
   capture_command "${BUNDLE_ROOT}/docker/docker-ps-a.txt" docker_cmd ps -a
   capture_command "${BUNDLE_ROOT}/docker/docker-images.txt" docker_cmd images
   capture_command "${BUNDLE_ROOT}/docker/docker-volume-ls.txt" docker_cmd volume ls
-  capture_command "${BUNDLE_ROOT}/docker/docker-volume-inspect.txt" docker_cmd volume inspect moltbox_ollama_data moltbox_opensearch_data
+  capture_command "${BUNDLE_ROOT}/docker/docker-volume-inspect.txt" docker_cmd volume inspect "${COMPOSE_PROJECT_NAME_VALUE}_ollama_data" "${COMPOSE_PROJECT_NAME_VALUE}_opensearch_data"
   capture_command "${BUNDLE_ROOT}/docker/docker-network-ls.txt" docker_cmd network ls
   capture_command "${BUNDLE_ROOT}/docker/docker-info.txt" docker_cmd info
   capture_compose_command "${BUNDLE_ROOT}/docker/compose-ps.txt" ps
@@ -279,7 +298,7 @@ capture_system_diagnostics() {
 capture_container_diagnostics() {
   local container_name
 
-  for container_name in moltbox-openclaw moltbox-ollama moltbox-opensearch; do
+  for container_name in "${OPENCLAW_CONTAINER_NAME}" "${OLLAMA_CONTAINER_NAME}" "${OPENSEARCH_CONTAINER_NAME}"; do
     capture_docker_command \
       "${BUNDLE_ROOT}/docker/${container_name}-inspect.json" \
       inspect "${container_name}"
@@ -314,67 +333,67 @@ capture_runtime_configuration() {
 capture_model_diagnostics() {
   capture_docker_command \
     "${BUNDLE_ROOT}/models/openclaw-doctor.txt" \
-    exec "moltbox-openclaw" openclaw doctor
+    exec "${OPENCLAW_CONTAINER_NAME}" openclaw doctor
 
   capture_docker_command \
     "${BUNDLE_ROOT}/models/openclaw-models-list.txt" \
-    exec "moltbox-openclaw" openclaw models list --all --json
+    exec "${OPENCLAW_CONTAINER_NAME}" openclaw models list --all --json
 
   capture_docker_command \
     "${BUNDLE_ROOT}/models/openclaw-models-status.txt" \
-    exec "moltbox-openclaw" openclaw models status --json
+    exec "${OPENCLAW_CONTAINER_NAME}" openclaw models status --json
 
   capture_docker_command \
     "${BUNDLE_ROOT}/models/openclaw-models-status-probe.txt" \
-    exec "moltbox-openclaw" openclaw models status --probe --probe-provider together --probe-concurrency 1 --probe-timeout 10000 --probe-max-tokens 8
+    exec "${OPENCLAW_CONTAINER_NAME}" openclaw models status --probe --probe-provider together --probe-concurrency 1 --probe-timeout 10000 --probe-max-tokens 8
 
   capture_docker_command \
     "${BUNDLE_ROOT}/models/openclaw-agents-list.txt" \
-    exec "moltbox-openclaw" openclaw agents list
+    exec "${OPENCLAW_CONTAINER_NAME}" openclaw agents list
 
   capture_docker_command \
     "${BUNDLE_ROOT}/models/openclaw-config-file.txt" \
-    exec "moltbox-openclaw" openclaw config file
+    exec "${OPENCLAW_CONTAINER_NAME}" openclaw config file
 
   capture_docker_command \
     "${BUNDLE_ROOT}/models/openclaw-config-primary-model.txt" \
-    exec "moltbox-openclaw" openclaw config get agents.defaults.model.primary
+    exec "${OPENCLAW_CONTAINER_NAME}" openclaw config get agents.defaults.model.primary
 
   capture_docker_command \
     "${BUNDLE_ROOT}/models/openclaw-config-gateway-mode.txt" \
-    exec "moltbox-openclaw" openclaw config get gateway.mode
+    exec "${OPENCLAW_CONTAINER_NAME}" openclaw config get gateway.mode
 
   capture_docker_command \
     "${BUNDLE_ROOT}/models/openclaw-config-gateway-bind.txt" \
-    exec "moltbox-openclaw" openclaw config get gateway.bind
+    exec "${OPENCLAW_CONTAINER_NAME}" openclaw config get gateway.bind
 
   capture_docker_command \
     "${BUNDLE_ROOT}/models/openclaw-config-gateway-auth-mode.txt" \
-    exec "moltbox-openclaw" openclaw config get gateway.auth.mode
+    exec "${OPENCLAW_CONTAINER_NAME}" openclaw config get gateway.auth.mode
 
   capture_docker_command \
     "${BUNDLE_ROOT}/models/openclaw-config-ollama-provider.txt" \
-    exec "moltbox-openclaw" openclaw config get models.providers.ollama
+    exec "${OPENCLAW_CONTAINER_NAME}" openclaw config get models.providers.ollama
 
   capture_docker_command \
     "${BUNDLE_ROOT}/models/openclaw-config-together-fallback.txt" \
-    exec "moltbox-openclaw" openclaw config get agents.defaults.model.fallbacks[0]
+    exec "${OPENCLAW_CONTAINER_NAME}" openclaw config get agents.defaults.model.fallbacks[0]
 
   capture_docker_command \
     "${BUNDLE_ROOT}/models/ollama-tags.json" \
-    exec "moltbox-ollama" curl -fsS http://localhost:11434/api/tags
+    exec "${OLLAMA_CONTAINER_NAME}" curl -fsS http://localhost:11434/api/tags
 
   capture_docker_command \
     "${BUNDLE_ROOT}/models/ollama-list.txt" \
-    exec "moltbox-ollama" ollama list
+    exec "${OLLAMA_CONTAINER_NAME}" ollama list
 
   capture_docker_command \
     "${BUNDLE_ROOT}/models/opensearch-cluster-health-from-opensearch.txt" \
-    exec "moltbox-opensearch" curl -fsS http://localhost:9200/_cluster/health
+    exec "${OPENSEARCH_CONTAINER_NAME}" curl -fsS http://localhost:9200/_cluster/health
 
   capture_docker_command \
     "${BUNDLE_ROOT}/models/opensearch-cluster-health-from-openclaw.txt" \
-    exec "moltbox-openclaw" node -e "const http=require('http');http.get('http://opensearch:9200/_cluster/health',r=>{r.pipe(process.stdout);r.on('end',()=>process.exit(r.statusCode&&r.statusCode<400?0:1));}).on('error',e=>{console.error(e.message);process.exit(1);});"
+    exec "${OPENCLAW_CONTAINER_NAME}" node -e "const http=require('http');http.get('http://opensearch:9200/_cluster/health',r=>{r.pipe(process.stdout);r.on('end',()=>process.exit(r.statusCode&&r.statusCode<400?0:1));}).on('error',e=>{console.error(e.message);process.exit(1);});"
 }
 
 create_archive() {

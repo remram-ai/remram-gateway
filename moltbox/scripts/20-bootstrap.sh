@@ -22,6 +22,10 @@ ENV_TEMPLATE="${CONFIG_DIR}/.env.example"
 CONTAINER_ENV_TEMPLATE="${CONFIG_DIR}/container.env.example"
 MODEL_RUNTIME_TEMPLATE="${CONFIG_DIR}/model-runtime.yml"
 OPENSEARCH_TEMPLATE="${CONFIG_DIR}/opensearch.yml"
+DEBUG_SERVICE_CONFIG_TEMPLATE="${CONFIG_DIR}/debug-service.config.json.example"
+DEBUG_SERVICE_CLIENTS_TEMPLATE="${CONFIG_DIR}/debug-service.clients.json.example"
+ESCALATION_INSTALL_SCRIPT="${SCRIPT_DIR}/install-escalation-agent.sh"
+CANONICAL_SCHEMA_FILE="${REPO_ROOT}/schemas/remram-request-packet.schema.json"
 OPENCLAW_REDACTED_SECRET="__OPENCLAW_REDACTED__"
 
 resolve_runtime_root() {
@@ -46,6 +50,9 @@ RUNTIME_OPENCLAW_CONFIG_FILE="${RUNTIME_ROOT}/openclaw.json"
 RUNTIME_CONTAINER_ENV_FILE="${RUNTIME_ROOT}/container.env"
 RUNTIME_MODEL_RUNTIME_FILE="${RUNTIME_ROOT}/model-runtime.yml"
 RUNTIME_OPENSEARCH_FILE="${RUNTIME_ROOT}/opensearch.yml"
+RUNTIME_DEBUG_SERVICE_DIR="${RUNTIME_ROOT}/debug-service"
+RUNTIME_DEBUG_SERVICE_CONFIG_FILE="${RUNTIME_DEBUG_SERVICE_DIR}/config.json"
+RUNTIME_DEBUG_SERVICE_CLIENTS_FILE="${RUNTIME_DEBUG_SERVICE_DIR}/clients.json"
 RUNTIME_AGENT_DIR="${RUNTIME_ROOT}/agents/main/agent"
 RUNTIME_MODELS_FILE="${RUNTIME_AGENT_DIR}/models.json"
 RUNTIME_AUTH_PROFILES_FILE="${RUNTIME_AGENT_DIR}/auth-profiles.json"
@@ -173,6 +180,7 @@ ensure_runtime_dirs() {
   mkdir -p "${RUNTIME_ROOT}"
   mkdir -p "${RUNTIME_AGENT_DIR}"
   mkdir -p "${RUNTIME_ROOT}/logs"
+  mkdir -p "${RUNTIME_DEBUG_SERVICE_DIR}"
 }
 
 ensure_runtime_templates() {
@@ -183,6 +191,8 @@ ensure_runtime_templates() {
   copy_if_missing "${CONTAINER_ENV_TEMPLATE}" "${RUNTIME_CONTAINER_ENV_FILE}"
   copy_if_missing "${MODEL_RUNTIME_TEMPLATE}" "${RUNTIME_MODEL_RUNTIME_FILE}"
   copy_if_missing "${OPENSEARCH_TEMPLATE}" "${RUNTIME_OPENSEARCH_FILE}"
+  copy_if_missing "${DEBUG_SERVICE_CONFIG_TEMPLATE}" "${RUNTIME_DEBUG_SERVICE_CONFIG_FILE}"
+  copy_if_missing "${DEBUG_SERVICE_CLIENTS_TEMPLATE}" "${RUNTIME_DEBUG_SERVICE_CLIENTS_FILE}"
   copy_if_missing "${OPENCLAW_TEMPLATE_DIR}/agents.yaml" "${RUNTIME_ROOT}/agents.yaml"
   copy_if_missing "${OPENCLAW_TEMPLATE_DIR}/channels.yaml" "${RUNTIME_ROOT}/channels.yaml"
   copy_if_missing "${OPENCLAW_TEMPLATE_DIR}/routing.yaml" "${RUNTIME_ROOT}/routing.yaml"
@@ -193,6 +203,8 @@ ensure_runtime_templates() {
 ensure_runtime_env_defaults() {
   upsert_env_key "${RUNTIME_CONTAINER_ENV_FILE}" "OPENSEARCH_JAVA_OPTS" "\"-Xms2g -Xmx2g\""
   log_info "Ensured runtime config: $(display_path "${RUNTIME_CONTAINER_ENV_FILE}") contains OPENSEARCH_JAVA_OPTS=\"-Xms2g -Xmx2g\""
+  upsert_env_key "${RUNTIME_ENV_FILE}" "DEBUG_SERVICE_PORT" "18890"
+  log_info "Ensured runtime config: $(display_path "${RUNTIME_ENV_FILE}") contains DEBUG_SERVICE_PORT=18890"
 }
 
 ensure_together_api_key() {
@@ -320,12 +332,59 @@ detect_host_name() {
   printf '%s\n' "${host_name}"
 }
 
+detect_trusted_proxy_candidates() {
+  if [[ "${OPENCLAW_TRUSTED_PROXIES_AUTO:-true}" != "true" ]]; then
+    return 0
+  fi
+
+  local network_ids=""
+  local inspect_json=""
+
+  network_ids="$(docker_cmd network ls --filter driver=bridge --quiet 2>/dev/null | tr '\n' ' ')"
+  if [[ -z "${network_ids//[[:space:]]/}" ]]; then
+    return 0
+  fi
+
+  inspect_json="$(docker_cmd network inspect ${network_ids} 2>/dev/null || true)"
+  if [[ -z "${inspect_json//[[:space:]]/}" ]]; then
+    return 0
+  fi
+
+  python3 - "${inspect_json}" <<'PY'
+import json
+import sys
+
+try:
+    payload = json.loads(sys.argv[1])
+except json.JSONDecodeError:
+    raise SystemExit(0)
+
+values = []
+for network in payload:
+    ipam = network.get("IPAM") or {}
+    for config in ipam.get("Config") or []:
+        gateway = (config or {}).get("Gateway")
+        if isinstance(gateway, str) and gateway and gateway not in values:
+            values.append(gateway)
+    for container in (network.get("Containers") or {}).values():
+        ipv4 = (container or {}).get("IPv4Address")
+        if isinstance(ipv4, str) and ipv4:
+            address = ipv4.split("/", 1)[0].strip()
+            if address and address not in values:
+                values.append(address)
+
+print(",".join(values))
+PY
+}
+
 ensure_openclaw_runtime_json() {
   local host_ip="$1"
   local host_name="$2"
   local gateway_port="$3"
+  local trusted_proxies_csv="${4:-}"
+  local extra_allowed_origins_csv="${5:-}"
 
-  python3 - "${RUNTIME_OPENCLAW_CONFIG_FILE}" "${host_ip}" "${host_name}" "${gateway_port}" <<'PY'
+  python3 - "${RUNTIME_OPENCLAW_CONFIG_FILE}" "${host_ip}" "${host_name}" "${gateway_port}" "${trusted_proxies_csv}" "${extra_allowed_origins_csv}" <<'PY'
 import json
 import pathlib
 import sys
@@ -334,17 +393,31 @@ config_path = pathlib.Path(sys.argv[1])
 host_ip = sys.argv[2]
 host_name = sys.argv[3]
 gateway_port = sys.argv[4]
+trusted_proxies_csv = sys.argv[5]
+extra_allowed_origins_csv = sys.argv[6]
 
 required_origins = [
+    "http://127.0.0.1",
+    "https://127.0.0.1",
     f"http://127.0.0.1:{gateway_port}",
     f"https://127.0.0.1:{gateway_port}",
+    "http://localhost",
+    "https://localhost",
     f"http://localhost:{gateway_port}",
     f"https://localhost:{gateway_port}",
+    f"http://{host_ip}",
+    f"https://{host_ip}",
     f"http://{host_ip}:{gateway_port}",
     f"https://{host_ip}:{gateway_port}",
+    f"http://{host_name}",
+    f"https://{host_name}",
     f"http://{host_name}:{gateway_port}",
     f"https://{host_name}:{gateway_port}",
 ]
+for value in extra_allowed_origins_csv.split(","):
+    stripped = value.strip()
+    if stripped:
+        required_origins.append(stripped)
 
 try:
     data = json.loads(config_path.read_text(encoding="utf-8"))
@@ -376,10 +449,30 @@ for value in [*existing, *required_origins]:
         merged.append(value)
 
 control_ui["allowedOrigins"] = merged
+
+trusted_proxies = gateway.get("trustedProxies")
+if not isinstance(trusted_proxies, list):
+    trusted_proxies = []
+
+merged_trusted_proxies = []
+for value in trusted_proxies:
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped and stripped not in merged_trusted_proxies:
+            merged_trusted_proxies.append(stripped)
+
+for value in trusted_proxies_csv.split(","):
+    stripped = value.strip()
+    if stripped and stripped not in merged_trusted_proxies:
+        merged_trusted_proxies.append(stripped)
+
+if merged_trusted_proxies:
+    gateway["trustedProxies"] = merged_trusted_proxies
+
 config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
 
-  log_info "Ensured runtime config: $(display_path "${RUNTIME_OPENCLAW_CONFIG_FILE}") contains gateway.mode=local and required control UI allowedOrigins"
+  log_info "Ensured runtime config: $(display_path "${RUNTIME_OPENCLAW_CONFIG_FILE}") contains gateway.mode=local, required control UI allowedOrigins, and trusted proxy settings"
 }
 
 require_key() {
@@ -434,6 +527,26 @@ ensure_gateway_token() {
   fi
 }
 
+ensure_debug_service_token() {
+  local token_value
+  token_value="$(grep -E '^DEBUG_SERVICE_TOKEN=' "${RUNTIME_ENV_FILE}" | head -n1 | cut -d= -f2- || true)"
+  if [[ -z "${token_value}" || "${token_value}" == "CHANGE_ME_DEBUG_SERVICE_TOKEN" ]]; then
+    local generated_token=""
+    if command -v openssl >/dev/null 2>&1; then
+      generated_token="$(openssl rand -hex 24)"
+    else
+      generated_token="$(date +%s%N | sha256sum | cut -c1-48)"
+    fi
+
+    if grep -Eq '^DEBUG_SERVICE_TOKEN=' "${RUNTIME_ENV_FILE}"; then
+      sed -i "s|^DEBUG_SERVICE_TOKEN=.*$|DEBUG_SERVICE_TOKEN=${generated_token}|" "${RUNTIME_ENV_FILE}"
+    else
+      printf '\nDEBUG_SERVICE_TOKEN=%s\n' "${generated_token}" >> "${RUNTIME_ENV_FILE}"
+    fi
+    log_warn "DEBUG_SERVICE_TOKEN was unset/placeholder. Generated and saved a strong token in ${RUNTIME_ENV_FILE}."
+  fi
+}
+
 load_env() {
   # shellcheck disable=SC1090
   set -a
@@ -447,6 +560,7 @@ validate_runtime_values() {
   require_non_empty_env "OPENCLAW_IMAGE"
   require_non_empty_env "OPENCLAW_GATEWAY_BIND"
   require_non_empty_env "OPENCLAW_GATEWAY_TOKEN"
+  require_non_empty_env "DEBUG_SERVICE_TOKEN"
   require_non_empty_env "OLLAMA_IMAGE"
   require_non_empty_env "OPENSEARCH_IMAGE"
   require_non_empty_env "GATEWAY_PORT"
@@ -485,6 +599,11 @@ validate_runtime_values() {
 
   if [[ "${OPENCLAW_GATEWAY_TOKEN}" == "CHANGE_ME_STRONG_TOKEN" ]]; then
     log_error "OPENCLAW_GATEWAY_TOKEN is still set to the placeholder value."
+    exit 1
+  fi
+
+  if [[ "${DEBUG_SERVICE_TOKEN}" == "CHANGE_ME_DEBUG_SERVICE_TOKEN" ]]; then
+    log_error "DEBUG_SERVICE_TOKEN is still set to the placeholder value."
     exit 1
   fi
 
@@ -699,6 +818,17 @@ probe_together_provider() {
   openclaw_exec models status --probe --probe-provider together --probe-concurrency 1 --probe-timeout 10000 --probe-max-tokens 8 >/dev/null
 }
 
+install_escalation_agent() {
+  log_info "Installing Remram escalation MVP into runtime."
+  env "MOLTBOX_RUNTIME_ROOT=${RUNTIME_ROOT}" bash "${ESCALATION_INSTALL_SCRIPT}"
+}
+
+verify_escalation_agent() {
+  log_info "Validating remram-escalate plugin discovery and enablement."
+  openclaw_exec plugins info remram-escalate >/dev/null
+  verify_openclaw_config_value "plugins.entries.remram-escalate.enabled" "true"
+}
+
 wait_for_gateway() {
   local port="${GATEWAY_PORT:-18789}"
   local sleep_seconds="${BOOTSTRAP_WAIT_INTERVAL_SECONDS:-2}"
@@ -726,6 +856,8 @@ main() {
   require_host_cmd curl
   require_host_cmd python3
   require_file "${COMPOSE_FILE}"
+  require_file "${ESCALATION_INSTALL_SCRIPT}"
+  require_file "${CANONICAL_SCHEMA_FILE}"
   ensure_runtime_root_safe
   enforce_runtime_outside_git_workspace
   log_info "Repository root: ${REPO_ROOT}"
@@ -737,15 +869,30 @@ main() {
   ensure_gateway_mode_local
   validate_required_keys
   ensure_gateway_token
+  ensure_debug_service_token
   load_env
   validate_runtime_values
   local host_ip
   local host_name
+  local auto_trusted_proxies
+  local merged_trusted_proxies
   host_ip="$(detect_host_lan_ip)"
   host_name="$(detect_host_name)"
+  auto_trusted_proxies="$(detect_trusted_proxy_candidates)"
+  merged_trusted_proxies="${OPENCLAW_TRUSTED_PROXIES:-}"
+  if [[ -n "${auto_trusted_proxies}" ]]; then
+    if [[ -n "${merged_trusted_proxies}" ]]; then
+      merged_trusted_proxies="${merged_trusted_proxies},${auto_trusted_proxies}"
+    else
+      merged_trusted_proxies="${auto_trusted_proxies}"
+    fi
+  fi
   log_info "Detected host LAN IP for control UI origins: ${host_ip}"
   log_info "Detected host name for control UI origins: ${host_name}"
-  ensure_openclaw_runtime_json "${host_ip}" "${host_name}" "${GATEWAY_PORT}"
+  if [[ -n "${auto_trusted_proxies}" ]]; then
+    log_info "Detected Docker-local trusted proxy candidates: ${auto_trusted_proxies}"
+  fi
+  ensure_openclaw_runtime_json "${host_ip}" "${host_name}" "${GATEWAY_PORT}" "${merged_trusted_proxies}" "${OPENCLAW_ALLOWED_ORIGINS_EXTRA:-}"
 
   bring_up_stack
   wait_for_ollama
@@ -753,7 +900,12 @@ main() {
   assert_ollama_model_pulled
   wait_for_openclaw_container
   configure_gateway_runtime
+  install_escalation_agent
+  compose restart openclaw >/dev/null
+  wait_for_openclaw_container
+  install_escalation_agent
   verify_openclaw_runtime_config
+  verify_escalation_agent
   wait_for_gateway
   assert_openclaw_can_reach_ollama
   prime_model_registry

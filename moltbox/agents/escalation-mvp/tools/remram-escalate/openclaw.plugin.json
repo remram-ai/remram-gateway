@@ -1,0 +1,11 @@
+{
+  "id": "remram-escalate",
+  "name": "Remram Escalation MVP",
+  "version": "0.1.0",
+  "description": "Validates a Remram decision object, returns a local answer when valid, or escalates to the configured fallback model.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

@@ -1,0 +1,366 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://remram.local/schemas/remram-request-packet.schema.json",
+  "title": "Remram Request Packet",
+  "description": "Draft shared packet schema for Preflight, Semantic Router, and Agent Router. Intentionally permissive while core fields stabilize.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "request": {
+      "$ref": "#/$defs/request"
+    },
+    "requester": {
+      "$ref": "#/$defs/requester"
+    },
+    "conversations": {
+      "type": "array",
+      "description": "Conversation continuity objects related to the current request.",
+      "items": {
+        "$ref": "#/$defs/conversation"
+      },
+      "default": []
+    },
+    "context": {
+      "type": "array",
+      "description": "Normal bounded context objects available to routers and agents.",
+      "items": {
+        "$ref": "#/$defs/context_item"
+      },
+      "default": []
+    },
+    "preferences": {
+      "$ref": "#/$defs/preferences"
+    },
+    "instructions": {
+      "type": "array",
+      "description": "Ephemeral run-specific instructions, separate from stable user preferences.",
+      "items": {
+        "$ref": "#/$defs/instruction"
+      },
+      "default": []
+    },
+    "extended_context": {
+      "type": "array",
+      "description": "Large or specialized context elements not intended for every stage.",
+      "items": {
+        "$ref": "#/$defs/context_item"
+      },
+      "default": []
+    },
+    "routing": {
+      "$ref": "#/$defs/routing"
+    },
+    "ledger": {
+      "type": "array",
+      "description": "Append-only trace of preflight, routing, and dispatch steps.",
+      "items": {
+        "$ref": "#/$defs/ledger_entry"
+      },
+      "default": []
+    },
+    "response": {
+      "$ref": "#/$defs/response"
+    }
+  },
+  "required": [
+    "request"
+  ],
+  "$defs": {
+    "request": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "surface": {
+          "type": "string",
+          "enum": [
+            "chat",
+            "voice",
+            "api",
+            "system"
+          ]
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/attachment"
+          },
+          "default": []
+        }
+      }
+    },
+    "requester": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "user_id": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "auth_level": {
+          "type": "string"
+        },
+        "device": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      }
+    },
+    "conversation": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "primary",
+            "related"
+          ]
+        },
+        "conversation_id": {
+          "type": "string"
+        },
+        "topic": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        }
+      }
+    },
+    "context_item": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "content": {},
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "preferences": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "response_style": {
+          "type": "string"
+        },
+        "escalation_tolerance": {
+          "type": "string"
+        },
+        "preferred_units": {
+          "type": "string"
+        },
+        "coding_language": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string"
+        },
+        "agent_permissions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "instruction": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "type": {
+              "type": "string"
+            },
+            "content": {}
+          },
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "routing": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "current_stage": {
+          "type": "string"
+        },
+        "next_stage": {
+          "type": "string"
+        },
+        "stage_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_escalation_depth": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "force_answer_at_max_depth": {
+          "type": "boolean"
+        },
+        "upstream_flags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "spawn_reason": {
+          "type": "string"
+        },
+        "agent_target": {
+          "type": "string"
+        },
+        "workflow_template": {
+          "type": "string"
+        },
+        "preference_flags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "dispatch_notes": {
+          "type": "string"
+        }
+      }
+    },
+    "ledger_entry": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "stage": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "preflight",
+            "semantic_stage",
+            "agent_router",
+            "agent_workflow",
+            "system"
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "agent_id": {
+          "type": "string"
+        },
+        "workflow_template": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tokens_in": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tokens_out": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "notes": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "response": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "answer",
+            "escalate",
+            "spawn_agent",
+            "failed"
+          ]
+        },
+        "status_message": {
+          "type": "string"
+        },
+        "answer": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      }
+    },
+    "attachment": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "mime_type": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

@@ -31,10 +31,30 @@ resolve_target_home() {
 
 TARGET_HOME="$(resolve_target_home)"
 RUNTIME_ROOT="${MOLTBOX_RUNTIME_ROOT:-${TARGET_HOME}/.openclaw}"
+RUNTIME_ENV_FILE="${RUNTIME_ROOT}/.env"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOLTBOX_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${MOLTBOX_DIR}/.." && pwd)"
 GIT_WORKSPACE_ROOT="${TARGET_HOME}/git"
+
+read_env_value() {
+  local key="$1"
+  local default_value="$2"
+  if [[ -f "${RUNTIME_ENV_FILE}" ]]; then
+    local matched
+    matched="$(grep -E "^${key}=" "${RUNTIME_ENV_FILE}" | head -n1 | cut -d= -f2- || true)"
+    matched="${matched%$'\r'}"
+    if [[ -n "${matched}" ]]; then
+      printf '%s\n' "${matched}"
+      return
+    fi
+  fi
+  printf '%s\n' "${default_value}"
+}
+
+OPENCLAW_CONTAINER_NAME="$(read_env_value "OPENCLAW_CONTAINER_NAME" "moltbox-openclaw")"
+OLLAMA_CONTAINER_NAME="$(read_env_value "OLLAMA_CONTAINER_NAME" "moltbox-ollama")"
+OPENSEARCH_CONTAINER_NAME="$(read_env_value "OPENSEARCH_CONTAINER_NAME" "moltbox-opensearch")"
 
 display_runtime_root() {
   if [[ "${RUNTIME_ROOT}" == "${TARGET_HOME}"* ]]; then
@@ -82,12 +102,12 @@ ensure_safe_runtime_root() {
 
 stop_containers() {
   status "stopping containers"
-  docker_cmd stop moltbox-openclaw moltbox-ollama moltbox-opensearch 2>/dev/null || true
+  docker_cmd stop "${OPENCLAW_CONTAINER_NAME}" "${OLLAMA_CONTAINER_NAME}" "${OPENSEARCH_CONTAINER_NAME}" 2>/dev/null || true
 }
 
 remove_containers() {
   status "removing containers"
-  docker_cmd rm moltbox-openclaw moltbox-ollama moltbox-opensearch 2>/dev/null || true
+  docker_cmd rm "${OPENCLAW_CONTAINER_NAME}" "${OLLAMA_CONTAINER_NAME}" "${OPENSEARCH_CONTAINER_NAME}" 2>/dev/null || true
 }
 
 reset_runtime() {

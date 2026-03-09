@@ -1,0 +1,17 @@
+[Unit]
+Description=Moltbox Debug Service
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=__MOLTBOX_USER__
+WorkingDirectory=__MOLTBOX_REPO_ROOT__/moltbox/debug-service
+Environment=MOLTBOX_RUNTIME_ROOT=__MOLTBOX_RUNTIME_ROOT__
+ExecStart=__MOLTBOX_VENV_PYTHON__ -m moltbox_debug_service serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

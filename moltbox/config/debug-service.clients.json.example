@@ -1,0 +1,14 @@
+{
+  "allowed_clients": [
+    {
+      "id": "codex",
+      "allowed_origins": [],
+      "scopes": ["*"]
+    },
+    {
+      "id": "vscode-agent",
+      "allowed_origins": [],
+      "scopes": ["*"]
+    }
+  ]
+}
