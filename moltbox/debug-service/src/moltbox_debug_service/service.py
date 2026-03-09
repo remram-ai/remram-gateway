@@ -140,10 +140,30 @@ class MoltboxDebugService:
             self._enforce_scope(ctx, "repo_status")
             return self._repo_status(runtime)
 
+        @self.mcp.tool(description="Summarize persisted runtime configuration, selected env values, client allowlists, and key OpenClaw settings.")
+        async def runtime_config_summary(runtime: str = "prod", ctx: Context | None = None) -> dict:
+            self._enforce_scope(ctx, "runtime_config_summary")
+            return self._runtime_config_summary(runtime)
+
+        @self.mcp.tool(description="Inspect persisted gateway auth and browser access settings without exposing raw secrets.")
+        async def gateway_auth_state(runtime: str = "prod", ctx: Context | None = None) -> dict:
+            self._enforce_scope(ctx, "gateway_auth_state")
+            return self._gateway_auth_state(runtime)
+
+        @self.mcp.tool(description="Inspect currently paired and pending OpenClaw devices for the selected runtime.")
+        async def paired_devices(runtime: str = "prod", ctx: Context | None = None) -> dict:
+            self._enforce_scope(ctx, "paired_devices")
+            return self._paired_devices(runtime)
+
         @self.mcp.tool(description="List available host snapshots under /mnt/moltbox-backup/snapshots.")
         async def list_runtime_snapshots(ctx: Context | None = None) -> dict:
             self._enforce_scope(ctx, "list_runtime_snapshots")
             return self._list_runtime_snapshots()
+
+        @self.mcp.tool(description="Inspect snapshot inventory and the latest rollback point under /mnt/moltbox-backup/snapshots.")
+        async def snapshot_state(ctx: Context | None = None) -> dict:
+            self._enforce_scope(ctx, "snapshot_state")
+            return self._snapshot_state()
 
         @self.mcp.tool(description="List allowlisted remote scripts available under moltbox/remote in the selected runtime repo.")
         async def list_remote_scripts(runtime: str = "prod", ctx: Context | None = None) -> dict:
@@ -490,6 +510,150 @@ class MoltboxDebugService:
                 "operation": "list_runtime_snapshots",
                 "runtime": "prod",
                 "details": {"snapshot_root": SNAPSHOT_ROOT, "snapshots": snapshots},
+            }
+        )
+        return result
+
+    def _snapshot_state(self) -> dict:
+        snapshots = self._snapshot_names()
+        latest = snapshots[-1] if snapshots else None
+        latest_path = f"{SNAPSHOT_ROOT}/{latest}" if latest else None
+        return {
+            "ok": True,
+            "operation": "snapshot_state",
+            "runtime": "prod",
+            "job_id": None,
+            "status": "succeeded",
+            "stdout": "\n".join(snapshots) + ("\n" if snapshots else ""),
+            "stderr": "",
+            "artifacts": [latest_path] if latest_path else [],
+            "started_at": None,
+            "finished_at": None,
+            "exit_code": 0,
+            "details": {
+                "snapshot_root": SNAPSHOT_ROOT,
+                "snapshot_count": len(snapshots),
+                "latest_snapshot": latest,
+                "latest_snapshot_path": latest_path,
+                "snapshots": snapshots,
+            },
+        }
+
+    def _runtime_config_summary(self, runtime: str) -> dict:
+        ctx = self._load_runtime(runtime)
+        cfg = load_service_config(ctx)
+        snapshots = self._snapshot_names()
+        client_summary = [
+            {
+                "id": rule.client_id,
+                "allowed_origins": list(rule.allowed_origins),
+                "scopes": list(rule.scopes),
+            }
+            for rule in cfg.clients.values()
+        ]
+        env_summary = {
+            "compose_project_name": ctx.compose_project_name,
+            "gateway_port": ctx.gateway_port,
+            "debug_service_port": ctx.debug_service_port,
+            "openclaw_gateway_bind": ctx.env_values.get("OPENCLAW_GATEWAY_BIND", ""),
+            "openclaw_trusted_proxies": ctx.env_values.get("OPENCLAW_TRUSTED_PROXIES", ""),
+            "openclaw_trusted_proxies_auto": ctx.env_values.get("OPENCLAW_TRUSTED_PROXIES_AUTO", ""),
+            "openclaw_allowed_origins_extra": ctx.env_values.get("OPENCLAW_ALLOWED_ORIGINS_EXTRA", ""),
+            "lan_cidr": ctx.lan_cidr,
+            "openclaw_container_name": ctx.openclaw_container_name,
+            "ollama_container_name": ctx.ollama_container_name,
+            "opensearch_container_name": ctx.opensearch_container_name,
+            "ollama_image": ctx.env_values.get("OLLAMA_IMAGE", ""),
+            "opensearch_image": ctx.env_values.get("OPENSEARCH_IMAGE", ""),
+            "openclaw_image": ctx.env_values.get("OPENCLAW_IMAGE", ""),
+        }
+        gateway = ctx.openclaw_values.get("gateway", {}) if isinstance(ctx.openclaw_values, dict) else {}
+        control_ui = gateway.get("controlUi", {}) if isinstance(gateway, dict) else {}
+        trusted_proxies = gateway.get("trustedProxies", []) if isinstance(gateway, dict) else []
+        token_details = {
+            "gateway_token_present": bool(ctx.env_values.get("OPENCLAW_GATEWAY_TOKEN")),
+            "gateway_token_fingerprint": self._token_fingerprint(ctx.env_values.get("OPENCLAW_GATEWAY_TOKEN", "")),
+            "debug_service_token_present": bool(ctx.env_values.get("DEBUG_SERVICE_TOKEN")),
+            "debug_service_token_fingerprint": self._token_fingerprint(ctx.env_values.get("DEBUG_SERVICE_TOKEN", "")),
+        }
+        details = {
+            "runtime_root": str(ctx.runtime_root),
+            "repo_root": str(ctx.repo_root),
+            "env": env_summary,
+            "gateway": {
+                "mode": gateway.get("mode") if isinstance(gateway, dict) else None,
+                "allowed_origins": [value for value in control_ui.get("allowedOrigins", []) if isinstance(value, str)] if isinstance(control_ui, dict) else [],
+                "trusted_proxies": [value for value in trusted_proxies if isinstance(value, str)] if isinstance(trusted_proxies, list) else [],
+            },
+            "debug_service": {
+                "host": cfg.host,
+                "port": cfg.port,
+                "lan_cidr": cfg.lan_cidr,
+                "allowed_clients": client_summary,
+            },
+            "tokens": token_details,
+            "snapshot": {
+                "latest_snapshot": (snapshots[-1] if snapshots else None),
+            },
+        }
+        return {
+            "ok": True,
+            "operation": "runtime_config_summary",
+            "runtime": runtime,
+            "job_id": None,
+            "status": "succeeded",
+            "stdout": json.dumps(details, indent=2) + "\n",
+            "stderr": "",
+            "artifacts": [],
+            "started_at": None,
+            "finished_at": None,
+            "exit_code": 0,
+            "details": details,
+        }
+
+    def _gateway_auth_state(self, runtime: str) -> dict:
+        ctx = self._load_runtime(runtime)
+        gateway = ctx.openclaw_values.get("gateway", {}) if isinstance(ctx.openclaw_values, dict) else {}
+        control_ui = gateway.get("controlUi", {}) if isinstance(gateway, dict) else {}
+        trusted_proxies = gateway.get("trustedProxies", []) if isinstance(gateway, dict) else []
+        details = {
+            "gateway_mode": gateway.get("mode") if isinstance(gateway, dict) else None,
+            "allowed_origins": [value for value in control_ui.get("allowedOrigins", []) if isinstance(value, str)] if isinstance(control_ui, dict) else [],
+            "trusted_proxies": [value for value in trusted_proxies if isinstance(value, str)] if isinstance(trusted_proxies, list) else [],
+            "gateway_token_present": bool(ctx.env_values.get("OPENCLAW_GATEWAY_TOKEN")),
+            "gateway_token_fingerprint": self._token_fingerprint(ctx.env_values.get("OPENCLAW_GATEWAY_TOKEN", "")),
+            "debug_service_token_present": bool(ctx.env_values.get("DEBUG_SERVICE_TOKEN")),
+            "debug_service_token_fingerprint": self._token_fingerprint(ctx.env_values.get("DEBUG_SERVICE_TOKEN", "")),
+        }
+        return {
+            "ok": True,
+            "operation": "gateway_auth_state",
+            "runtime": runtime,
+            "job_id": None,
+            "status": "succeeded",
+            "stdout": json.dumps(details, indent=2) + "\n",
+            "stderr": "",
+            "artifacts": [],
+            "started_at": None,
+            "finished_at": None,
+            "exit_code": 0,
+            "details": details,
+        }
+
+    def _paired_devices(self, runtime: str) -> dict:
+        ctx = self._load_runtime(runtime)
+        result = self._run_command(
+            ctx,
+            self._compose_args(ctx, "exec", "-T", "openclaw", "openclaw", "devices", "list"),
+            timeout=self.config.default_timeout_seconds,
+            cwd=ctx.repo_root,
+        )
+        sections = self._parse_devices_list(result["stdout"])
+        result.update(
+            {
+                "operation": "paired_devices",
+                "runtime": runtime,
+                "details": sections,
             }
         )
         return result
@@ -954,6 +1118,42 @@ class MoltboxDebugService:
             if stripped.startswith(f"{SNAPSHOT_ROOT}/"):
                 return stripped
         return None
+
+    def _snapshot_names(self) -> list[str]:
+        root = Path(SNAPSHOT_ROOT)
+        if not root.exists():
+            return []
+        return sorted(path.name for path in root.iterdir() if path.is_dir())
+
+    def _token_fingerprint(self, value: str) -> str | None:
+        if not value:
+            return None
+        if len(value) <= 8:
+            return value
+        return f"{value[:4]}...{value[-4:]}"
+
+    def _parse_devices_list(self, stdout: str) -> dict[str, Any]:
+        pending_count = 0
+        paired_count = 0
+        for line in stdout.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("Pending (") and stripped.endswith(")"):
+                pending_count = self._extract_section_count(stripped)
+            elif stripped.startswith("Paired (") and stripped.endswith(")"):
+                paired_count = self._extract_section_count(stripped)
+        return {
+            "pending_count": pending_count,
+            "paired_count": paired_count,
+            "raw": stdout,
+        }
+
+    def _extract_section_count(self, value: str) -> int:
+        try:
+            start = value.index("(") + 1
+            end = value.index(")", start)
+            return int(value[start:end])
+        except (ValueError, TypeError):
+            return 0
 
     def _ensure_test_runtime_idle(self) -> None:
         prod = self._load_runtime("prod")
