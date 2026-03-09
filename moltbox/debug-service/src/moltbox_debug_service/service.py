@@ -50,7 +50,9 @@ MUTATING_OPERATIONS = {
     "patch_repo",
     "run_bootstrap",
     "run_script",
+    "run_script_sync",
     "run_remote_script",
+    "run_remote_script_sync",
     "repo_pull",
     "repo_checkout_ref",
 }
@@ -244,6 +246,16 @@ class MoltboxDebugService:
         async def run_script(script_id: str, runtime: str = "prod", ctx: Context | None = None) -> dict:
             return await launch("run_script", runtime, lambda job_id: self._run_named_script(runtime, script_id, job_id), ctx)
 
+        @self.mcp.tool(description="Run an allowlisted operational Moltbox script and return its stdout/stderr directly.")
+        async def run_script_sync(
+            script_id: str,
+            runtime: str = "prod",
+            timeout_seconds: int | None = None,
+            ctx: Context | None = None,
+        ) -> dict:
+            self._enforce_scope(ctx, "run_script_sync")
+            return self._run_sync_operation("run_script_sync", runtime, lambda: self._run_named_script_sync(runtime, script_id, timeout_seconds))
+
         @self.mcp.tool(description="Run a synced script from moltbox/remote in the selected runtime repo as an async job.")
         async def run_remote_script(
             script_name: str,
@@ -252,6 +264,21 @@ class MoltboxDebugService:
             ctx: Context | None = None,
         ) -> dict:
             return await launch("run_remote_script", runtime, lambda job_id: self._run_remote_script(runtime, script_name, args or [], job_id), ctx)
+
+        @self.mcp.tool(description="Run a synced script from moltbox/remote/exec and return its stdout/stderr directly.")
+        async def run_remote_script_sync(
+            script_name: str,
+            runtime: str = "prod",
+            args: list[str] | None = None,
+            timeout_seconds: int | None = None,
+            ctx: Context | None = None,
+        ) -> dict:
+            self._enforce_scope(ctx, "run_remote_script_sync")
+            return self._run_sync_operation(
+                "run_remote_script_sync",
+                runtime,
+                lambda: self._run_remote_script_sync(runtime, script_name, args or [], timeout_seconds),
+            )
 
         @self.mcp.tool(description="Fetch and fast-forward pull the selected runtime repo from git as an async job.")
         async def repo_pull(runtime: str = "prod", branch: str | None = None, ctx: Context | None = None) -> dict:
@@ -384,6 +411,20 @@ class MoltboxDebugService:
         ctx = build_runtime(runtime)
         ensure_runtime_dirs(ctx)
         return ctx
+
+    def _run_sync_operation(self, operation: str, runtime: str, handler: Callable[[], dict]) -> dict:
+        self._load_runtime(runtime)
+        if operation not in MUTATING_OPERATIONS:
+            return handler()
+        with self._busy_lock:
+            if runtime in self._busy_runtimes:
+                raise RuntimeError(f"Another mutating operation is already running for runtime '{runtime}'")
+            self._busy_runtimes.add(runtime)
+        try:
+            return handler()
+        finally:
+            with self._busy_lock:
+                self._busy_runtimes.discard(runtime)
 
     def _compose_args(self, ctx: RuntimeContext, *extra: str) -> list[str]:
         return ["docker", "compose", "--env-file", str(ctx.env_file), "-f", str(ctx.compose_file), *extra]
@@ -730,6 +771,24 @@ class MoltboxDebugService:
             raise RuntimeError(f"Unsupported script_id: {script_id}")
         return self._run_script(runtime, script_name, job_id, "run_script")
 
+    def _run_named_script_sync(self, runtime: str, script_id: str, timeout_seconds: int | None) -> dict:
+        script_name = SAFE_SCRIPT_MAP.get(script_id)
+        if script_name is None:
+            raise RuntimeError(f"Unsupported script_id: {script_id}")
+        ctx = self._load_runtime(runtime)
+        if runtime == "test" and script_name == "20-bootstrap.sh":
+            self._ensure_test_runtime_idle()
+        result = self._run_command(
+            ctx,
+            ["bash", str(ctx.script_dir / script_name)],
+            timeout=self._clamp_timeout(timeout_seconds),
+            cwd=ctx.repo_root / "moltbox",
+        )
+        result["operation"] = "run_script_sync"
+        result["runtime"] = runtime
+        result["details"] = {"script_id": script_id, "script_name": script_name}
+        return result
+
     def _run_remote_script(self, runtime: str, script_name: str, args: list[str], job_id: str) -> dict:
         ctx = self._load_runtime(runtime)
         path = self._resolve_remote_script(ctx, script_name)
@@ -742,6 +801,21 @@ class MoltboxDebugService:
             cwd=ctx.repo_root,
         )
         result["operation"] = "run_remote_script"
+        result["details"] = {"script_name": path.name, "script_path": str(path.relative_to(ctx.repo_root)), "args": args}
+        return result
+
+    def _run_remote_script_sync(self, runtime: str, script_name: str, args: list[str], timeout_seconds: int | None) -> dict:
+        ctx = self._load_runtime(runtime)
+        path = self._resolve_remote_script(ctx, script_name)
+        argv = ["bash", str(path), *self._sanitize_script_args(args)]
+        result = self._run_command(
+            ctx,
+            argv,
+            timeout=self._clamp_timeout(timeout_seconds),
+            cwd=ctx.repo_root,
+        )
+        result["operation"] = "run_remote_script_sync"
+        result["runtime"] = runtime
         result["details"] = {"script_name": path.name, "script_path": str(path.relative_to(ctx.repo_root)), "args": args}
         return result
 
@@ -1106,6 +1180,11 @@ class MoltboxDebugService:
                 raise RuntimeError("Script args must not contain control characters")
             sanitized.append(value)
         return sanitized
+
+    def _clamp_timeout(self, timeout_seconds: int | None) -> int:
+        if timeout_seconds is None:
+            return self.config.default_timeout_seconds
+        return max(1, min(timeout_seconds, self.config.long_timeout_seconds))
 
     def _validate_git_ref(self, ref: str) -> None:
         allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._/-")

@@ -155,7 +155,7 @@ def build_runtime(name: str) -> RuntimeContext:
         repo_root=repo_root,
         script_dir=repo_root / "moltbox" / "scripts",
         config_dir=repo_root / "moltbox" / "config",
-        remote_script_dir=repo_root / "moltbox" / "remote",
+        remote_script_dir=repo_root / "moltbox" / "remote" / "exec",
         env_file=env_file,
         container_env_file=container_env_file,
         openclaw_config_file=openclaw_config_file,
