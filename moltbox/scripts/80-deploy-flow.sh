@@ -14,4 +14,9 @@ fi
 
 export PYTHONPATH="${SERVICE_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
+if [[ ! -x "${VENV_PYTHON}" ]]; then
+  echo "warning: ${VENV_PYTHON} is missing; using ${PYTHON_BIN}" >&2
+  echo "warning: run bash ./scripts/70-debug-service.sh install if Python dependencies are missing" >&2
+fi
+
 exec "${PYTHON_BIN}" -m moltbox_debug_service publish-flow "$@"

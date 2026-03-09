@@ -1,0 +1,3 @@
+moltbox/debug-service/.venv/
+moltbox/debug-service/src/*.egg-info/
+moltbox/debug-service/src/**/__pycache__/

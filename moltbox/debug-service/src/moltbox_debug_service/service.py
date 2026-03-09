@@ -1339,8 +1339,22 @@ class MoltboxDebugService:
         return {"branch": branch["stdout"].strip(), "head": head["stdout"].strip()}
 
     def _git_dirty(self, ctx: RuntimeContext) -> bool:
-        status = self._run_command(ctx, ["git", "status", "--porcelain"], cwd=ctx.repo_root)
-        return bool(status["stdout"].strip())
+        status = self._run_command(ctx, ["git", "status", "--porcelain", "--untracked-files=all"], cwd=ctx.repo_root)
+        if not status["ok"]:
+            return True
+        ignored_prefixes = (
+            "moltbox/debug-service/.venv/",
+            "moltbox/debug-service/src/moltbox_debug_service.egg-info/",
+            "moltbox/debug-service/src/moltbox_debug_service/__pycache__/",
+        )
+        for line in status["stdout"].splitlines():
+            path = line[3:].strip()
+            if not path:
+                continue
+            if path.startswith(ignored_prefixes):
+                continue
+            return True
+        return False
 
     def _stack_running(self, ctx: RuntimeContext) -> bool:
         ps = self._run_command(ctx, self._compose_args(ctx, "ps", "-q", "openclaw"), timeout=15, cwd=ctx.repo_root)
