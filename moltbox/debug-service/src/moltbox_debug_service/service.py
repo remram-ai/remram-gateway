@@ -31,6 +31,7 @@ TEST_COMPOSE_PROJECT = "moltbox-test"
 ALLOWED_PATCH_PREFIXES = ("moltbox/", "schemas/")
 SNAPSHOT_TOOL = "/usr/local/bin/moltbox-snapshot"
 SNAPSHOT_ROOT = "/mnt/moltbox-backup/snapshots"
+SNAPSHOT_SUDO_PRESERVE_ENV = "HOME,USER,LOGNAME"
 SAFE_SCRIPT_MAP = {
     "runtime_reset": "12-runtime-reset.sh",
     "bootstrap": "20-bootstrap.sh",
@@ -471,7 +472,7 @@ class MoltboxDebugService:
         ctx = self._load_runtime("prod")
         result = self._run_command(
             ctx,
-            ["sudo", SNAPSHOT_TOOL, "list"],
+            ["sudo", f"--preserve-env={SNAPSHOT_SUDO_PRESERVE_ENV}", SNAPSHOT_TOOL, "list"],
             timeout=self.config.default_timeout_seconds,
             cwd=ctx.repo_root,
         )
@@ -695,7 +696,7 @@ class MoltboxDebugService:
         ctx = self._load_runtime("prod")
         result = self._run_command(
             ctx,
-            ["sudo", SNAPSHOT_TOOL, "create"],
+            ["sudo", f"--preserve-env={SNAPSHOT_SUDO_PRESERVE_ENV}", SNAPSHOT_TOOL, "create"],
             job_id=job_id,
             timeout=self.config.long_timeout_seconds,
             cwd=ctx.repo_root,
@@ -776,7 +777,7 @@ class MoltboxDebugService:
             raise RuntimeError(f"Invalid snapshot folder: {snapshot_folder}")
         result = self._run_command(
             ctx,
-            ["sudo", SNAPSHOT_TOOL, "restore", snapshot_folder],
+            ["sudo", f"--preserve-env={SNAPSHOT_SUDO_PRESERVE_ENV}", SNAPSHOT_TOOL, "restore", snapshot_folder],
             job_id=job_id,
             timeout=self.config.long_timeout_seconds,
             cwd=ctx.repo_root,
