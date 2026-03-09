@@ -782,6 +782,8 @@ verify_openclaw_config_value() {
   local expected="$2"
   local allow_redacted="${3:-false}"
   local actual=""
+  local normalized_expected="${expected}"
+  local normalized_actual=""
 
   if ! actual="$(openclaw_exec config get "${path}" 2>/dev/null)"; then
     log_error "Failed to read OpenClaw config path: ${path}"
@@ -793,7 +795,13 @@ verify_openclaw_config_value() {
     return 0
   fi
 
-  if [[ "${actual}" != "${expected}" ]]; then
+  normalized_actual="${actual}"
+  if [[ "${expected}" == \[* || "${expected}" == \{* ]]; then
+    normalized_expected="$(printf '%s' "${expected}" | tr -d '[:space:]')"
+    normalized_actual="$(printf '%s' "${actual}" | tr -d '[:space:]')"
+  fi
+
+  if [[ "${normalized_actual}" != "${normalized_expected}" ]]; then
     log_error "OpenClaw config drift at ${path}: expected '${expected}', got '${actual}'."
     return 1
   fi
