@@ -29,6 +29,12 @@ TEST_GATEWAY_PORT = 18790
 TEST_DEBUG_SERVICE_PORT = 18891
 TEST_COMPOSE_PROJECT = "moltbox-test"
 ALLOWED_PATCH_PREFIXES = ("moltbox/", "schemas/")
+SAFE_SCRIPT_MAP = {
+    "runtime_reset": "12-runtime-reset.sh",
+    "bootstrap": "20-bootstrap.sh",
+    "validate": "30-validate.sh",
+    "diagnostics": "99-diagnostics.sh",
+}
 MUTATING_OPERATIONS = {
     "start_stack",
     "stop_stack",
@@ -39,6 +45,9 @@ MUTATING_OPERATIONS = {
     "backup_runtime",
     "patch_repo",
     "run_bootstrap",
+    "run_script",
+    "run_remote_script",
+    "repo_pull",
 }
 TRUSTED_HOSTS = [
     "localhost",
@@ -121,6 +130,16 @@ class MoltboxDebugService:
             self._enforce_scope(ctx, "job_status")
             return self.jobs.get(job_id)
 
+        @self.mcp.tool(description="Inspect the git branch, commit, and working tree status for the selected runtime repo.")
+        async def repo_status(runtime: str = "prod", ctx: Context | None = None) -> dict:
+            self._enforce_scope(ctx, "repo_status")
+            return self._repo_status(runtime)
+
+        @self.mcp.tool(description="List allowlisted remote scripts available under moltbox/remote in the selected runtime repo.")
+        async def list_remote_scripts(runtime: str = "prod", ctx: Context | None = None) -> dict:
+            self._enforce_scope(ctx, "list_remote_scripts")
+            return self._list_remote_scripts(runtime)
+
         @self.mcp.tool(description="Read the captured stdout and stderr tail for an async debug-service job.")
         async def job_output(job_id: str, tail_lines: int = 200, ctx: Context | None = None) -> dict:
             self._enforce_scope(ctx, "job_output")
@@ -182,6 +201,23 @@ class MoltboxDebugService:
         @self.mcp.tool(description="Run the Moltbox bootstrap script against the selected runtime as an async job.")
         async def run_bootstrap(runtime: str = "prod", ctx: Context | None = None) -> dict:
             return await launch("run_bootstrap", runtime, lambda job_id: self._run_script(runtime, "20-bootstrap.sh", job_id, "run_bootstrap"), ctx)
+
+        @self.mcp.tool(description="Run an allowlisted operational Moltbox script by script id as an async job.")
+        async def run_script(script_id: str, runtime: str = "prod", ctx: Context | None = None) -> dict:
+            return await launch("run_script", runtime, lambda job_id: self._run_named_script(runtime, script_id, job_id), ctx)
+
+        @self.mcp.tool(description="Run a synced script from moltbox/remote in the selected runtime repo as an async job.")
+        async def run_remote_script(
+            script_name: str,
+            runtime: str = "prod",
+            args: list[str] | None = None,
+            ctx: Context | None = None,
+        ) -> dict:
+            return await launch("run_remote_script", runtime, lambda job_id: self._run_remote_script(runtime, script_name, args or [], job_id), ctx)
+
+        @self.mcp.tool(description="Fetch and fast-forward pull the selected runtime repo from git as an async job.")
+        async def repo_pull(runtime: str = "prod", branch: str | None = None, ctx: Context | None = None) -> dict:
+            return await launch("repo_pull", runtime, lambda job_id: self._repo_pull(runtime, branch, job_id), ctx)
 
     def create_app(self) -> FastAPI:
         @contextlib.asynccontextmanager
@@ -390,6 +426,58 @@ class MoltboxDebugService:
             },
         }
 
+    def _repo_status(self, runtime: str) -> dict:
+        ctx = self._load_runtime(runtime)
+        branch = self._run_command(ctx, ["git", "branch", "--show-current"], cwd=ctx.repo_root)
+        head = self._run_command(ctx, ["git", "rev-parse", "HEAD"], cwd=ctx.repo_root)
+        status = self._run_command(ctx, ["git", "status", "--short", "--branch"], cwd=ctx.repo_root)
+        return {
+            "ok": branch["ok"] and head["ok"] and status["ok"],
+            "operation": "repo_status",
+            "runtime": runtime,
+            "job_id": None,
+            "status": "succeeded" if branch["ok"] and head["ok"] and status["ok"] else "failed",
+            "stdout": status["stdout"],
+            "stderr": "\n".join(filter(None, [branch["stderr"], head["stderr"], status["stderr"]])),
+            "artifacts": [],
+            "started_at": None,
+            "finished_at": None,
+            "exit_code": 0 if branch["ok"] and head["ok"] and status["ok"] else 1,
+            "details": {
+                "repo_root": str(ctx.repo_root),
+                "branch": branch["stdout"].strip(),
+                "head": head["stdout"].strip(),
+            },
+        }
+
+    def _list_remote_scripts(self, runtime: str) -> dict:
+        ctx = self._load_runtime(runtime)
+        scripts: list[dict[str, Any]] = []
+        if ctx.remote_script_dir.is_dir():
+            for path in sorted(ctx.remote_script_dir.glob("*.sh")):
+                if path.is_file():
+                    scripts.append(
+                        {
+                            "name": path.name,
+                            "path": str(path.relative_to(ctx.repo_root)),
+                            "size_bytes": path.stat().st_size,
+                        }
+                    )
+        return {
+            "ok": True,
+            "operation": "list_remote_scripts",
+            "runtime": runtime,
+            "job_id": None,
+            "status": "succeeded",
+            "stdout": "\n".join(script["name"] for script in scripts) + ("\n" if scripts else ""),
+            "stderr": "",
+            "artifacts": [],
+            "started_at": None,
+            "finished_at": None,
+            "exit_code": 0,
+            "details": {"repo_root": str(ctx.repo_root), "remote_script_dir": str(ctx.remote_script_dir), "scripts": scripts},
+        }
+
     def _logs(self, runtime: str, service: str, tail_lines: int, since_seconds: int | None = None) -> dict:
         ctx = self._load_runtime(runtime)
         if service not in {"openclaw", "ollama", "opensearch"}:
@@ -426,6 +514,27 @@ class MoltboxDebugService:
             cwd=ctx.repo_root / "moltbox",
         )
         result["operation"] = operation_name or script_name
+        return result
+
+    def _run_named_script(self, runtime: str, script_id: str, job_id: str) -> dict:
+        script_name = SAFE_SCRIPT_MAP.get(script_id)
+        if script_name is None:
+            raise RuntimeError(f"Unsupported script_id: {script_id}")
+        return self._run_script(runtime, script_name, job_id, "run_script")
+
+    def _run_remote_script(self, runtime: str, script_name: str, args: list[str], job_id: str) -> dict:
+        ctx = self._load_runtime(runtime)
+        path = self._resolve_remote_script(ctx, script_name)
+        argv = ["bash", str(path), *self._sanitize_script_args(args)]
+        result = self._run_command(
+            ctx,
+            argv,
+            job_id=job_id,
+            timeout=self.config.long_timeout_seconds,
+            cwd=ctx.repo_root,
+        )
+        result["operation"] = "run_remote_script"
+        result["details"] = {"script_name": path.name, "script_path": str(path.relative_to(ctx.repo_root)), "args": args}
         return result
 
     def _collect_diagnostics(self, runtime: str, job_id: str) -> dict:
@@ -579,6 +688,36 @@ class MoltboxDebugService:
         applied["runtime"] = runtime
         return applied
 
+    def _repo_pull(self, runtime: str, branch: str | None, job_id: str) -> dict:
+        ctx = self._load_runtime(runtime)
+        fetch = self._run_command(
+            ctx,
+            ["git", "fetch", "--prune", "origin"],
+            job_id=job_id,
+            timeout=self.config.long_timeout_seconds,
+            cwd=ctx.repo_root,
+        )
+        if not fetch["ok"]:
+            fetch["operation"] = "repo_pull"
+            fetch["runtime"] = runtime
+            return fetch
+
+        argv = ["git", "pull", "--ff-only"]
+        if branch:
+            self._validate_git_ref(branch)
+            argv.extend(["origin", branch])
+
+        pulled = self._run_command(
+            ctx,
+            argv,
+            job_id=job_id,
+            timeout=self.config.long_timeout_seconds,
+            cwd=ctx.repo_root,
+        )
+        pulled["operation"] = "repo_pull"
+        pulled["runtime"] = runtime
+        return pulled
+
     def _validate_patch_paths(self, patch: str) -> None:
         if "GIT binary patch" in patch or "\x00" in patch:
             raise RuntimeError("Binary patches are not allowed")
@@ -679,6 +818,30 @@ class MoltboxDebugService:
 
     def _write_env_file(self, path: Path, values: dict[str, str]) -> None:
         path.write_text("".join(f"{key}={value}\n" for key, value in values.items()), encoding="utf-8")
+
+    def _resolve_remote_script(self, ctx: RuntimeContext, script_name: str) -> Path:
+        if not script_name or Path(script_name).name != script_name or not script_name.endswith(".sh"):
+            raise RuntimeError(f"Invalid remote script name: {script_name}")
+        path = (ctx.remote_script_dir / script_name).resolve()
+        root = ctx.remote_script_dir.resolve()
+        if not str(path).startswith(str(root)) or not path.is_file():
+            raise RuntimeError(f"Remote script not found: {script_name}")
+        return path
+
+    def _sanitize_script_args(self, args: list[str]) -> list[str]:
+        sanitized: list[str] = []
+        for value in args:
+            if not isinstance(value, str):
+                raise RuntimeError("Script args must be strings")
+            if "\n" in value or "\r" in value or "\x00" in value:
+                raise RuntimeError("Script args must not contain control characters")
+            sanitized.append(value)
+        return sanitized
+
+    def _validate_git_ref(self, ref: str) -> None:
+        allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._/-")
+        if not ref or any(char not in allowed for char in ref) or ".." in ref or ref.startswith("/") or ref.endswith("/"):
+            raise RuntimeError(f"Invalid git ref: {ref}")
 
     def _ensure_test_runtime_idle(self) -> None:
         prod = self._load_runtime("prod")

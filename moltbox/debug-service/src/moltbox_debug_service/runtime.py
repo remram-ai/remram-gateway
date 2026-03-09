@@ -23,6 +23,7 @@ class RuntimeContext:
     repo_root: Path
     script_dir: Path
     config_dir: Path
+    remote_script_dir: Path
     env_file: Path
     container_env_file: Path
     openclaw_config_file: Path
@@ -154,6 +155,7 @@ def build_runtime(name: str) -> RuntimeContext:
         repo_root=repo_root,
         script_dir=repo_root / "moltbox" / "scripts",
         config_dir=repo_root / "moltbox" / "config",
+        remote_script_dir=repo_root / "moltbox" / "remote",
         env_file=env_file,
         container_env_file=container_env_file,
         openclaw_config_file=openclaw_config_file,
