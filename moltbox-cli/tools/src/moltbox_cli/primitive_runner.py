@@ -57,7 +57,7 @@ PRIMITIVES: dict[str, PrimitiveDefinition] = {
         "Deploy a rendered Docker Compose target.",
         "host/commands/deploy/deploy-target.py",
         True,
-        ("target", "render_dir", "compose_project", "container_names", "remove_orphans"),
+        ("target", "render_dir", "compose_project", "container_names", "remove_orphans", "build_images"),
     ),
     "start_target": PrimitiveDefinition(
         "start_target",

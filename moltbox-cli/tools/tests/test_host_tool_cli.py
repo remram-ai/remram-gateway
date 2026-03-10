@@ -8,6 +8,7 @@ import subprocess
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from moltbox_cli import host_tool_cli
+from moltbox_cli.primitive_runner import PRIMITIVES
 
 
 def test_validate_target_waits_for_starting_health(monkeypatch) -> None:
@@ -97,3 +98,7 @@ def test_deploy_target_uses_build_when_requested(monkeypatch, tmp_path: Path) ->
     assert result["ok"] is True
     assert commands
     assert commands[0][-3:] == ["up", "-d", "--build"]
+
+
+def test_deploy_target_primitive_accepts_build_images() -> None:
+    assert "build_images" in PRIMITIVES["deploy_target"].allowed_payload_keys
