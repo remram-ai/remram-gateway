@@ -1,6 +1,11 @@
 services:
   ollama:
-    image: "${OLLAMA_IMAGE:-ollama/ollama:0.6.8}"
+    image: "${OLLAMA_IMAGE:-moltbox-ollama:local}"
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        OLLAMA_BASE_IMAGE: "${OLLAMA_BASE_IMAGE:-ollama/ollama:0.6.8}"
     container_name: "{{ container_name }}"
     restart: unless-stopped
     env_file:

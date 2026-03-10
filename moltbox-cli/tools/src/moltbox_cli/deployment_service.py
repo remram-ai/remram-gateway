@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from .config import AppConfig
@@ -44,6 +45,10 @@ def _latest_validator_result(config: AppConfig, target: str) -> dict[str, Any] |
     if rollback and "validator_result" in rollback:
         return rollback["validator_result"]
     return None
+
+
+def _render_requires_build(render_dir: str) -> bool:
+    return (Path(render_dir) / "Dockerfile").exists()
 
 
 def render_assets(config: AppConfig, target: str, profile: str | None = None) -> dict[str, Any]:
@@ -162,6 +167,7 @@ def deploy_target(config: AppConfig, target: str) -> dict[str, Any]:
             "compose_project": record.compose_project,
             "container_names": record.container_names,
             "remove_orphans": record.target_class != "shared_service",
+            "build_images": _render_requires_build(render_dir),
         },
     )
     validate_result = run_primitive(

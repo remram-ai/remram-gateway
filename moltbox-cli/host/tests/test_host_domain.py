@@ -38,11 +38,16 @@ def test_host_render_uses_moltbox_container_assets(tmp_path: Path, monkeypatch) 
     assert source_paths
     assert all("moltbox\\containers\\shared-services\\ollama" in path for path in source_paths)
     compose_text = (Path(rendered["output_dir"]) / "compose.yml").read_text(encoding="utf-8")
+    dockerfile_text = (Path(rendered["output_dir"]) / "Dockerfile").read_text(encoding="utf-8")
     assert "container_name: \"moltbox-ollama\"" in compose_text
+    assert "image: \"${OLLAMA_IMAGE:-moltbox-ollama:local}\"" in compose_text
+    assert "build:" in compose_text
+    assert "OLLAMA_BASE_IMAGE" in compose_text
     assert "gpus: all" in compose_text
     assert "ports:" not in compose_text
     assert "external: true" in compose_text
     assert "name: \"moltbox_moltbox_internal\"" in compose_text
+    assert "FROM ${OLLAMA_BASE_IMAGE}" in dockerfile_text
     target = get_target(config, "ollama")
     assert target.compose_project == "moltbox"
     assert target.container_names == ["moltbox-ollama"]
@@ -57,11 +62,16 @@ def test_opensearch_render_uses_repo_config_and_legacy_service_identity(tmp_path
     assert payload["ok"] is True
     rendered = payload["render"]
     compose_text = (Path(rendered["output_dir"]) / "compose.yml").read_text(encoding="utf-8")
+    dockerfile_text = (Path(rendered["output_dir"]) / "Dockerfile").read_text(encoding="utf-8")
     assert "container_name: \"moltbox-opensearch\"" in compose_text
+    assert "image: \"${OPENSEARCH_IMAGE:-moltbox-opensearch:local}\"" in compose_text
+    assert "build:" in compose_text
+    assert "OPENSEARCH_BASE_IMAGE" in compose_text
     assert "./config/opensearch.yml:/usr/share/opensearch/config/opensearch.yml:ro" in compose_text
     assert "ports:" not in compose_text
     assert "external: true" in compose_text
     assert "name: \"moltbox_moltbox_internal\"" in compose_text
+    assert "FROM ${OPENSEARCH_BASE_IMAGE}" in dockerfile_text
     assert rendered["config_path"].replace("/", "\\").endswith("moltbox\\config\\opensearch.yml")
     assert Path(rendered["rendered_config_path"]).name == "opensearch.yml"
     rendered_config = Path(rendered["rendered_config_path"]).read_text(encoding="utf-8")

@@ -1,6 +1,11 @@
 services:
   opensearch:
-    image: "${OPENSEARCH_IMAGE:-opensearchproject/opensearch:2.18.0}"
+    image: "${OPENSEARCH_IMAGE:-moltbox-opensearch:local}"
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        OPENSEARCH_BASE_IMAGE: "${OPENSEARCH_BASE_IMAGE:-opensearchproject/opensearch:2.18.0}"
     container_name: "{{ container_name }}"
     restart: unless-stopped
     env_file:

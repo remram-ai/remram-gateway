@@ -219,6 +219,8 @@ def _deploy_target(payload: dict[str, Any]) -> dict[str, Any]:
         return _result("deploy_target", False, errors=["docker_not_available"])
     render_dir = Path(str(payload["render_dir"]))
     compose_args = ["up", "-d"]
+    if bool(payload.get("build_images", False)):
+        compose_args.append("--build")
     if bool(payload.get("remove_orphans", True)):
         compose_args.append("--remove-orphans")
     command = _compose_command(render_dir, str(payload["compose_project"]), compose_args)
