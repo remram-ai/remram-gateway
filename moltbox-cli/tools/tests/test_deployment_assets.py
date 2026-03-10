@@ -37,6 +37,8 @@ def test_tools_render_uses_tools_container_assets(tmp_path: Path, monkeypatch) -
     compose_text = (Path(rendered["output_dir"]) / "compose.yml").read_text(encoding="utf-8")
     assert "image: \"${MOLTBOX_TOOLS_IMAGE:-moltbox-tools:local}\"" in compose_text
     assert "container_name: \"moltbox-tools\"" in compose_text
+    assert "MOLTBOX_INTERNAL_HOST: \"0.0.0.0\"" in compose_text
+    assert "MOLTBOX_CONFIG_PATH: " in compose_text
     assert "/var/run/docker.sock:/var/run/docker.sock" in compose_text
     manifest = read_json_file(Path(rendered["render_manifest_path"]))
     source_paths = [path.replace("/", "\\") for path in manifest["source_asset_paths"]]

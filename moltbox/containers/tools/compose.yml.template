@@ -6,6 +6,9 @@ services:
     ports:
       - "${MOLTBOX_TOOLS_PORT:-{{ gateway_port }}}:7474"
     environment:
+      MOLTBOX_CONFIG_PATH: "{{ state_root }}/tools/config.yaml"
+      MOLTBOX_INTERNAL_HOST: "0.0.0.0"
+      MOLTBOX_INTERNAL_PORT: "7474"
       MOLTBOX_STATE_ROOT: "{{ state_root }}"
       MOLTBOX_RUNTIME_ROOT: "{{ runtime_artifacts_root }}"
     volumes:
