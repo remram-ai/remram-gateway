@@ -22,8 +22,23 @@ def _cli_base_command(config: AppConfig) -> list[str]:
     return [sys.executable, "-m", "remram_dev_manager_control_pane"]
 
 
+def _config_flags(config: AppConfig) -> list[str]:
+    return [
+        "--config-path",
+        str(config.config_path),
+        "--state-root",
+        str(config.state_root),
+        "--runtime-artifacts-root",
+        str(config.runtime_artifacts_root),
+        "--internal-host",
+        config.internal_host,
+        "--internal-port",
+        str(config.internal_port),
+    ]
+
+
 def invoke_cli_json(config: AppConfig, args: list[str]) -> dict[str, Any]:
-    command = _cli_base_command(config) + args
+    command = _cli_base_command(config) + _config_flags(config) + args
     completed = subprocess.run(command, capture_output=True, text=True, check=False)
     stdout = completed.stdout.strip()
     payload = json.loads(stdout) if stdout else {}

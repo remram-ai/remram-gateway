@@ -1,24 +1,35 @@
-# Remram Control Pane
+# Remram Control Plane
 
-Phase 1 scaffold for the new `dev-manager` control plane.
+Canonical `remram` control-plane package for the inner loop.
 
-Current responsibilities:
+Implemented in this phase:
 
-- define the stable host filesystem layout under `~/.remram`
-- define the `dev`, `test`, and `prod` runtime inventory
-- define the shared service inventory for `ollama` and `opensearch`
-- define the host-tool primitive contract and source paths
+- CLI entrypoint: `remram`
+- control-plane service: `remram serve`
+- JSON health and target inspection commands
+- target registry bootstrap under `~/.remram/state/targets`
+- runtime state files under `~/.remram/control-plane`
+- host log root under `~/Moltbox/logs`
+- thin MCP adapter over CLI commands
 
-Current commands:
+Commands:
 
 ```bash
-python -m remram_dev_manager_control_pane describe
-python -m remram_dev_manager_control_pane ensure-layout
-python -m remram_dev_manager_control_pane list-runtimes
-python -m remram_dev_manager_control_pane list-shared-services
-python -m remram_dev_manager_control_pane list-primitives
+python -m remram_dev_manager_control_pane version
+python -m remram_dev_manager_control_pane health
+python -m remram_dev_manager_control_pane serve
+python -m remram_dev_manager_control_pane list-targets
+python -m remram_dev_manager_control_pane status --target control
+python -m remram_dev_manager_control_pane.mcp_server --host 127.0.0.1 --port 7475
 ```
 
-The package currently uses the Python standard library only. API and MCP/HTTP
-surface area can be added on top of this foundation once the deployment
-primitives start doing real work.
+Package scripts after install:
+
+```bash
+remram version
+remram health
+remram serve
+remram list-targets
+remram status --target control
+remram-mcp --host 127.0.0.1 --port 7475
+```

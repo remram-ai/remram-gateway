@@ -13,7 +13,7 @@ from .http_app import create_http_app
 from .log_paths import service_log_file
 from .logging_setup import configure_logger, log_event
 from .registry_bootstrap import ensure_registry_bootstrap
-from .runtime_state import write_pid, write_runtime_state
+from .runtime_state import clear_pid, write_pid, write_runtime_state
 from .versioning import resolve_version_info
 
 
@@ -51,4 +51,21 @@ def run_control_plane_service(config: AppConfig) -> None:
     )
     log_event(logger, logging.INFO, "startup", "control-plane", "starting control-plane service")
     app = create_http_app(config, logger)
-    uvicorn.run(app, host=config.internal_host, port=config.internal_port, access_log=False, log_config=None)
+    try:
+        uvicorn.run(app, host=config.internal_host, port=config.internal_port, access_log=False, log_config=None)
+    except Exception:  # noqa: BLE001
+        write_runtime_state(
+            config.layout.runtime_state_file,
+            {
+                "serve_state": "failed",
+                "status": "failed",
+                "started_at": datetime.now(tz=UTC).isoformat(),
+                "host": config.internal_host,
+                "port": config.internal_port,
+                "pid": os.getpid(),
+                "version": version,
+            },
+        )
+        log_event(logger, logging.ERROR, "fatal_error", "control-plane", "control-plane service terminated unexpectedly")
+        clear_pid(config.layout.pid_file)
+        raise
