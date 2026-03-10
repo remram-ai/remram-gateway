@@ -7,10 +7,8 @@ services:
       - "${OPENCLAW_PORT:-{{ gateway_port }}}:18789"
     volumes:
       - "{{ runtime_root }}:/home/node/.openclaw"
-      - "./config/openclaw:/app/config/openclaw:ro"
     environment:
       REMRAM_RUNTIME_PROFILE: "{{ profile }}"
-      OPENCLAW_CONFIG_DIR: "/app/config/openclaw"
     command:
       - node
       - dist/index.js

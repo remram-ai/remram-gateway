@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable
 
 from .deployment_assets import render_target
 from .jsonio import emit_json, read_json_file, write_json_file
 from .operation_ids import utc_now_iso
+from .runtime_config import seed_runtime_root_config
 
 
 def _result(
@@ -82,6 +85,20 @@ def _container_details(container_names: list[str]) -> list[dict[str, Any]]:
     return containers
 
 
+def _validation_errors(containers: list[dict[str, Any]]) -> list[str]:
+    errors: list[str] = []
+    for container in containers:
+        if not container["present"]:
+            errors.append(f"container '{container['name']}' is missing")
+            continue
+        if container["state"] != "running":
+            errors.append(f"container '{container['name']}' is not running")
+        health = container["health"]
+        if health and health != "healthy":
+            errors.append(f"container '{container['name']}' health is '{health}'")
+    return errors
+
+
 def _aggregate_state(containers: list[dict[str, Any]]) -> str:
     if not containers or all(not item["present"] for item in containers):
         return "not_found"
@@ -114,6 +131,24 @@ def _copy_tree(source: Path, destination: Path) -> None:
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(path.read_bytes())
+
+
+def _sync_runtime_root(payload: dict[str, Any]) -> None:
+    source_raw = str(payload.get("runtime_root_source_dir") or "")
+    runtime_root_raw = str(payload.get("runtime_root") or "")
+    if not source_raw or not runtime_root_raw:
+        return
+    source_dir = Path(source_raw)
+    runtime_root = Path(runtime_root_raw)
+    if not source_dir.exists():
+        raise FileNotFoundError(f"rendered runtime root '{source_dir}' was not found")
+    seed_runtime_root_config(
+        source_dir,
+        str(payload.get("gateway_port") or ""),
+        command_runner=_run_command,
+        existing_runtime_root_dir=runtime_root,
+    )
+    _copy_tree(source_dir, runtime_root)
 
 
 def _build_inline_config(payload: dict[str, Any]):  # noqa: ANN202
@@ -176,6 +211,8 @@ def _tail_target_logs(payload: dict[str, Any]) -> dict[str, Any]:
 def _compose_lifecycle(operation: str, payload: dict[str, Any], compose_args: list[str]) -> dict[str, Any]:
     if not _docker_available():
         return _result(operation, False, errors=["docker_not_available"])
+    if operation in {"start_runtime", "restart_runtime"}:
+        _sync_runtime_root(payload)
     render_dir = Path(str(payload["render_dir"]))
     command = _compose_command(render_dir, str(payload["compose_project"]), compose_args)
     completed = _run_command(command)
@@ -216,6 +253,7 @@ def _docker_target_lifecycle(operation: str, payload: dict[str, Any], docker_ver
 def _deploy_target(payload: dict[str, Any]) -> dict[str, Any]:
     if not _docker_available():
         return _result("deploy_target", False, errors=["docker_not_available"])
+    _sync_runtime_root(payload)
     render_dir = Path(str(payload["render_dir"]))
     compose_args = ["up", "-d"]
     if bool(payload.get("remove_orphans", True)):
@@ -328,17 +366,16 @@ def _restore_target_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
 def _validate_target(payload: dict[str, Any]) -> dict[str, Any]:
     if not _docker_available():
         return _result("validate_target", False, errors=["docker_not_available"])
-    containers = _container_details([str(item) for item in payload.get("container_names", [])])
+    timeout_seconds = int(os.environ.get("MOLTBOX_VALIDATE_TIMEOUT_SECONDS", "90"))
+    deadline = time.monotonic() + max(timeout_seconds, 0)
+    containers: list[dict[str, Any]] = []
     errors: list[str] = []
-    for container in containers:
-        if not container["present"]:
-            errors.append(f"container '{container['name']}' is missing")
-            continue
-        if container["state"] != "running":
-            errors.append(f"container '{container['name']}' is not running")
-        health = container["health"]
-        if health and health != "healthy":
-            errors.append(f"container '{container['name']}' health is '{health}'")
+    while True:
+        containers = _container_details([str(item) for item in payload.get("container_names", [])])
+        errors = _validation_errors(containers)
+        if not errors or time.monotonic() >= deadline:
+            break
+        time.sleep(2)
     return _result(
         "validate_target",
         not errors,

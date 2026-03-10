@@ -19,6 +19,7 @@ from moltbox_cli.deployment_service import runtime_lifecycle
 from moltbox_cli.jsonio import read_json_file
 from moltbox_cli.jsonio import write_json_file
 from moltbox_cli.registry import get_target
+from moltbox_cli.runtime_config import seed_runtime_root_config
 
 
 class Args:
@@ -56,20 +57,81 @@ def test_runtime_render_uses_runtime_container_assets(tmp_path: Path, monkeypatc
     asset_path = rendered["asset_path"].replace("/", "\\")
     config_path = rendered["config_path"].replace("/", "\\")
     assert "moltbox\\containers\\runtimes\\openclaw" in asset_path
-    assert "moltbox\\config\\openclaw" in config_path
+    assert "moltbox\\config" in config_path
     assert Path(rendered["output_dir"]) == config.layout.deploy_dir / "rendered" / "dev" / "dev"
-    assert Path(rendered["rendered_config_dir"]) == Path(rendered["output_dir"]) / "config" / "openclaw"
+    assert Path(rendered["rendered_runtime_root_dir"]) == Path(rendered["output_dir"]) / "runtime-root"
+    assert rendered["gateway_port"] == "18789"
     manifest = read_json_file(Path(rendered["render_manifest_path"]))
     source_paths = [path.replace("/", "\\") for path in manifest["source_asset_paths"]]
     config_source_paths = [path.replace("/", "\\") for path in manifest["source_config_paths"]]
     assert source_paths
     assert config_source_paths
     assert all("moltbox\\containers\\runtimes\\openclaw" in path for path in source_paths)
-    assert all("moltbox\\config\\openclaw" in path for path in config_source_paths)
+    assert any(path.endswith("moltbox\\config\\openclaw.json") for path in config_source_paths)
+    assert any(path.endswith("moltbox\\config\\openclaw\\agents.yaml") for path in config_source_paths)
     compose_text = (Path(rendered["output_dir"]) / "compose.yml").read_text(encoding="utf-8")
-    assert "./config/openclaw:/app/config/openclaw:ro" in compose_text
+    assert "./config/openclaw:/app/config/openclaw:ro" not in compose_text
+    runtime_root_dir = Path(rendered["rendered_runtime_root_dir"])
+    assert (runtime_root_dir / "openclaw.json").exists()
+    assert (runtime_root_dir / "agents.yaml").exists()
+    assert (runtime_root_dir / "routing.yaml").exists()
     target = get_target(config, "dev")
     assert Path(target.runtime_root) == config.layout.runtime_artifacts_root / "openclaw" / "dev"
+
+
+def test_runtime_root_config_seeds_allowed_origins(tmp_path: Path, monkeypatch) -> None:
+    runtime_root = tmp_path / "runtime-root"
+    runtime_root.mkdir(parents=True)
+    (runtime_root / "openclaw.json").write_text(
+        json.dumps({"gateway": {"controlUi": {"allowedOrigins": ["http://existing.local"]}}}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MOLTBOX_PUBLIC_HOST_IP", "192.168.1.189")
+    monkeypatch.setenv("MOLTBOX_PUBLIC_HOSTNAME", "moltbox-prime")
+    monkeypatch.setenv("MOLTBOX_OPENCLAW_ALLOWED_ORIGINS_EXTRA", "https://console.example")
+
+    seed_runtime_root_config(runtime_root, "28789")
+
+    payload = json.loads((runtime_root / "openclaw.json").read_text(encoding="utf-8"))
+    allowed_origins = payload["gateway"]["controlUi"]["allowedOrigins"]
+    assert payload["gateway"]["mode"] == "local"
+    assert "http://existing.local" in allowed_origins
+    assert "http://127.0.0.1:28789" in allowed_origins
+    assert "http://192.168.1.189:28789" in allowed_origins
+    assert "http://moltbox-prime:28789" in allowed_origins
+    assert "https://console.example" in allowed_origins
+
+
+def test_runtime_root_config_preserves_live_gateway_auth_and_origins(tmp_path: Path, monkeypatch) -> None:
+    rendered_root = tmp_path / "rendered-root"
+    live_root = tmp_path / "live-root"
+    rendered_root.mkdir(parents=True)
+    live_root.mkdir(parents=True)
+    (rendered_root / "openclaw.json").write_text(
+        json.dumps({"gateway": {"controlUi": {"allowedOrigins": []}}, "tools": {"deny": ["group:web"]}}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (live_root / "openclaw.json").write_text(
+        json.dumps(
+            {
+                "gateway": {
+                    "auth": {"token": "existing-token"},
+                    "controlUi": {"allowedOrigins": ["https://already.example"]},
+                }
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MOLTBOX_PUBLIC_HOST_IP", "192.168.1.189")
+    monkeypatch.setenv("MOLTBOX_PUBLIC_HOSTNAME", "moltbox-prime")
+
+    seed_runtime_root_config(rendered_root, "28789", existing_runtime_root_dir=live_root)
+
+    payload = json.loads((rendered_root / "openclaw.json").read_text(encoding="utf-8"))
+    assert payload["gateway"]["auth"]["token"] == "existing-token"
+    assert "https://already.example" in payload["gateway"]["controlUi"]["allowedOrigins"]
 
 
 def test_runtime_lifecycle_reports_new_cli_command(tmp_path: Path, monkeypatch) -> None:

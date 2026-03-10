@@ -46,6 +46,17 @@ def _latest_validator_result(config: AppConfig, target: str) -> dict[str, Any] |
     return None
 
 
+def _runtime_root_payload(record, render_details: dict[str, Any]) -> dict[str, str]:
+    rendered_runtime_root_dir = str(render_details.get("rendered_runtime_root_dir") or "")
+    if record.target_class != "runtime" or not rendered_runtime_root_dir:
+        return {}
+    return {
+        "runtime_root": str(record.runtime_root or ""),
+        "runtime_root_source_dir": rendered_runtime_root_dir,
+        "gateway_port": str(render_details.get("gateway_port") or ""),
+    }
+
+
 def render_assets(config: AppConfig, target: str, profile: str | None = None) -> dict[str, Any]:
     record = get_target(config, target)
     effective_profile = profile or record.profile
@@ -162,6 +173,7 @@ def deploy_target(config: AppConfig, target: str) -> dict[str, Any]:
             "compose_project": record.compose_project,
             "container_names": record.container_names,
             "remove_orphans": record.target_class != "shared_service",
+            **_runtime_root_payload(record, render_details),
         },
     )
     validate_result = run_primitive(
@@ -337,6 +349,7 @@ def runtime_lifecycle(config: AppConfig, env: str, action: str) -> dict[str, Any
             "render_dir": str(render_details.get("output_dir") or deployment_rendered_dir(config, record.id, record.profile)),
             "compose_project": record.compose_project,
             "container_names": record.container_names,
+            **(_runtime_root_payload(record, render_details) if action in {"start", "restart"} else {}),
         },
     )
     return {

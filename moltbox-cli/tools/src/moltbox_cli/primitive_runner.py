@@ -57,7 +57,16 @@ PRIMITIVES: dict[str, PrimitiveDefinition] = {
         "Deploy a rendered Docker Compose target.",
         "host/commands/deploy/deploy-target.py",
         True,
-        ("target", "render_dir", "compose_project", "container_names", "remove_orphans"),
+        (
+            "target",
+            "render_dir",
+            "compose_project",
+            "container_names",
+            "remove_orphans",
+            "runtime_root",
+            "runtime_root_source_dir",
+            "gateway_port",
+        ),
     ),
     "start_target": PrimitiveDefinition(
         "start_target",
@@ -89,7 +98,7 @@ PRIMITIVES: dict[str, PrimitiveDefinition] = {
         "Start a rendered runtime target.",
         "runtime/commands/stack/start-runtime.py",
         True,
-        ("target", "render_dir", "compose_project", "container_names"),
+        ("target", "render_dir", "compose_project", "container_names", "runtime_root", "runtime_root_source_dir", "gateway_port"),
     ),
     "stop_runtime": PrimitiveDefinition(
         "stop_runtime",
@@ -97,7 +106,7 @@ PRIMITIVES: dict[str, PrimitiveDefinition] = {
         "Stop a rendered runtime target.",
         "runtime/commands/stack/stop-runtime.py",
         True,
-        ("target", "render_dir", "compose_project", "container_names"),
+        ("target", "render_dir", "compose_project", "container_names", "runtime_root", "runtime_root_source_dir"),
     ),
     "restart_runtime": PrimitiveDefinition(
         "restart_runtime",
@@ -105,7 +114,7 @@ PRIMITIVES: dict[str, PrimitiveDefinition] = {
         "Restart a rendered runtime target.",
         "runtime/commands/stack/restart-runtime.py",
         True,
-        ("target", "render_dir", "compose_project", "container_names"),
+        ("target", "render_dir", "compose_project", "container_names", "runtime_root", "runtime_root_source_dir", "gateway_port"),
     ),
     "snapshot_target": PrimitiveDefinition(
         "snapshot_target",

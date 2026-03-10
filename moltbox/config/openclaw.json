@@ -2,7 +2,8 @@
   "gateway": {
     "mode": "local",
     "controlUi": {
-      "allowedOrigins": []
+      "allowedOrigins": [],
+      "dangerouslyAllowHostHeaderOriginFallback": true
     }
   },
   "tools": {

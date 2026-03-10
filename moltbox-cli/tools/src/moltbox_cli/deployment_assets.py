@@ -21,10 +21,22 @@ def asset_path_for_target(asset_path: str) -> Path:
     return deployment_assets_root() / asset_path
 
 
+def _runtime_config_mappings(config_dir: Path) -> list[tuple[Path, Path]]:
+    mappings = [
+        (config_dir / "openclaw.json", Path("openclaw.json")),
+        (config_dir / "model-runtime.yml", Path("model-runtime.yml")),
+        (config_dir / "opensearch.yml", Path("opensearch.yml")),
+    ]
+    openclaw_dir = config_dir / "openclaw"
+    for source in sorted(path for path in openclaw_dir.rglob("*") if path.is_file()):
+        mappings.append((source, source.relative_to(openclaw_dir)))
+    return mappings
+
+
 def config_path_for_target(target_id: str, target_class: str) -> Path | None:
     config_dir = build_repo_layout().config_dir
     if target_class == "runtime":
-        return config_dir / "openclaw"
+        return config_dir
     if target_id == "opensearch":
         return config_dir / "opensearch.yml"
     return None
@@ -92,13 +104,18 @@ def _render_tree(source_root: Path, output_root: Path, context: dict[str, str]) 
     return source_paths
 
 
-def _render_config_source(source: Path, output_root: Path, context: dict[str, str]) -> tuple[list[str], Path]:
-    if source.is_dir():
-        rendered_root = output_root / source.name
-        return _render_tree(source, rendered_root, context), rendered_root
-    rendered_path = output_root / source.name
-    _render_file(source, rendered_path, context)
-    return [str(source)], rendered_path
+def _render_mapped_files(
+    mappings: list[tuple[Path, Path]],
+    output_root: Path,
+    context: dict[str, str],
+) -> tuple[list[str], Path]:
+    source_paths: list[str] = []
+    for source, relative_path in mappings:
+        _render_file(source, output_root / relative_path, context)
+        source_paths.append(str(source))
+    if len(mappings) == 1:
+        return source_paths, output_root / mappings[0][1]
+    return source_paths, output_root
 
 
 def render_target(config: AppConfig, target: str, profile: str | None = None) -> dict[str, Any]:
@@ -120,7 +137,11 @@ def render_target(config: AppConfig, target: str, profile: str | None = None) ->
             asset_path=str(asset_dir),
         )
     config_source = config_path_for_target(record.id, record.target_class)
-    if record.target_class == "runtime" and (config_source is None or not config_source.exists()):
+    if record.target_class == "runtime" and config_source is not None:
+        runtime_config_required = all(source.exists() for source, _ in _runtime_config_mappings(config_source))
+    else:
+        runtime_config_required = config_source is not None and config_source.exists()
+    if record.target_class == "runtime" and not runtime_config_required:
         raise ValidationError(
             f"deployment config for target '{record.id}' was not found",
             "create the canonical runtime config directory under `moltbox/config/` and rerun the command",
@@ -141,7 +162,18 @@ def render_target(config: AppConfig, target: str, profile: str | None = None) ->
     config_source_paths: list[str] = []
     rendered_config_path: Path | None = None
     if config_source is not None:
-        config_source_paths, rendered_config_path = _render_config_source(config_source, output_dir / "config", context)
+        if record.target_class == "runtime":
+            config_source_paths, rendered_config_path = _render_mapped_files(
+                _runtime_config_mappings(config_source),
+                output_dir / "runtime-root",
+                context,
+            )
+        else:
+            config_source_paths, rendered_config_path = _render_mapped_files(
+                [(config_source, Path(config_source.name))],
+                output_dir / "config",
+                context,
+            )
 
     manifest = {
         "target": record.id,
@@ -160,10 +192,12 @@ def render_target(config: AppConfig, target: str, profile: str | None = None) ->
         "render_manifest_path": str(output_dir / "render-manifest.json"),
         "asset_path": str(asset_dir),
     }
+    if context.get("gateway_port"):
+        payload["gateway_port"] = context["gateway_port"]
     if config_source is not None and rendered_config_path is not None:
         payload["config_path"] = str(config_source)
-        if config_source.is_dir():
-            payload["rendered_config_dir"] = str(rendered_config_path)
+        if record.target_class == "runtime":
+            payload["rendered_runtime_root_dir"] = str(rendered_config_path)
         else:
             payload["rendered_config_path"] = str(rendered_config_path)
     return payload
