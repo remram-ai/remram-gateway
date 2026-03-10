@@ -41,6 +41,8 @@ def test_host_render_uses_moltbox_container_assets(tmp_path: Path, monkeypatch) 
     assert "container_name: \"moltbox-ollama\"" in compose_text
     assert "gpus: all" in compose_text
     assert "ports:" not in compose_text
+    assert "external: true" in compose_text
+    assert "name: \"moltbox_moltbox_internal\"" in compose_text
     target = get_target(config, "ollama")
     assert target.compose_project == "moltbox"
     assert target.container_names == ["moltbox-ollama"]
@@ -58,6 +60,8 @@ def test_opensearch_render_uses_repo_config_and_legacy_service_identity(tmp_path
     assert "container_name: \"moltbox-opensearch\"" in compose_text
     assert "./config/opensearch.yml:/usr/share/opensearch/config/opensearch.yml:ro" in compose_text
     assert "ports:" not in compose_text
+    assert "external: true" in compose_text
+    assert "name: \"moltbox_moltbox_internal\"" in compose_text
     assert rendered["config_path"].replace("/", "\\").endswith("moltbox\\config\\opensearch.yml")
     assert Path(rendered["rendered_config_path"]).name == "opensearch.yml"
     rendered_config = Path(rendered["rendered_config_path"]).read_text(encoding="utf-8")
