@@ -12,6 +12,7 @@ PRIMARY_LOG_FILES = {
     "openclaw-prod": "openclaw.log",
     "ollama": "service.log",
     "opensearch": "service.log",
+    "ssl": "service.log",
     "caddy": "service.log",
 }
 

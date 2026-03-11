@@ -1,0 +1,34 @@
+mcp:
+  tools:
+    verbs:
+      - version
+      - health
+      - status
+      - inspect
+  host:
+    verbs:
+      - status
+      - inspect
+      - logs
+  runtime:
+    dev:
+      verbs:
+        - deploy
+        - rollback
+        - status
+        - inspect
+        - logs
+        - start
+        - stop
+        - restart
+    test:
+      verbs:
+        - deploy
+        - status
+        - logs
+        - inspect
+    prod:
+      verbs:
+        - deploy
+        - inspect
+        - logs

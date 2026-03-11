@@ -1,0 +1,14 @@
+services:
+  ssl:
+    image: "${MOLTBOX_SSL_IMAGE:-caddy:2.8.4}"
+    container_name: "{{ container_name }}"
+    restart: unless-stopped
+    ports:
+      - "${MOLTBOX_SSL_HTTP_PORT:-80}:80"
+      - "${MOLTBOX_SSL_HTTPS_PORT:-443}:443"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - "./config/ssl/Caddyfile:/etc/caddy/Caddyfile:ro"
+      - "{{ shared_root }}/data:/data"
+      - "{{ shared_root }}/config:/config"

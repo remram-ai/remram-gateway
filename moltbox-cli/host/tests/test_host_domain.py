@@ -97,3 +97,24 @@ def test_host_lifecycle_reports_canonical_cli_command(tmp_path: Path, monkeypatc
     payload = host_lifecycle(config, "ollama", "restart")
     assert payload["command"] == "moltbox host ollama restart"
     assert payload["ok"] is True
+
+
+def test_ssl_render_uses_canonical_ssl_assets(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("MOLTBOX_STATE_ROOT", str(tmp_path / ".remram"))
+    monkeypatch.setenv("MOLTBOX_RUNTIME_ROOT", str(tmp_path / "Moltbox"))
+    monkeypatch.setenv("MOLTBOX_PUBLIC_HOSTNAME", "moltbox-lab")
+    config = resolve_config(Args())
+
+    payload = render_assets(config, "ssl")
+
+    assert payload["ok"] is True
+    assert payload["command"] == "moltbox host ssl deploy"
+    rendered = payload["render"]
+    compose_text = (Path(rendered["output_dir"]) / "compose.yml").read_text(encoding="utf-8")
+    caddyfile_text = (Path(rendered["output_dir"]) / "config" / "ssl" / "Caddyfile").read_text(encoding="utf-8")
+    assert "container_name: \"moltbox-caddy\"" in compose_text
+    assert "host.docker.internal:host-gateway" in compose_text
+    assert "moltbox-dev, dev.moltbox-lab {" in caddyfile_text
+    assert "moltbox-test, test.moltbox-lab {" in caddyfile_text
+    target = get_target(config, "caddy")
+    assert target.id == "ssl"

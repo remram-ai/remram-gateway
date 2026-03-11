@@ -7,8 +7,10 @@ services:
       - "${OPENCLAW_PORT:-{{ gateway_port }}}:18789"
     volumes:
       - "{{ runtime_root }}:/home/node/.openclaw"
+      - "./config/openclaw:/app/config/openclaw:ro"
     environment:
       REMRAM_RUNTIME_PROFILE: "{{ profile }}"
+      OPENCLAW_CONFIG_DIR: "/app/config/openclaw"
     command:
       - node
       - dist/index.js
@@ -17,3 +19,10 @@ services:
       - lan
       - --port
       - "18789"
+    networks:
+      - moltbox_internal
+
+networks:
+  moltbox_internal:
+    external: true
+    name: "{{ internal_network_name }}"

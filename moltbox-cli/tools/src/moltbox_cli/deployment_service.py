@@ -21,6 +21,7 @@ from .target_resolution import canonical_cli_command, resolve_target_identifier
 def _primitive_config_payload(config: AppConfig) -> dict[str, object]:
     return {
         "config_path": str(config.config_path),
+        "policy_path": str(config.policy_path),
         "state_root": str(config.state_root),
         "runtime_artifacts_root": str(config.runtime_artifacts_root),
         "internal_host": config.internal_host,
@@ -39,6 +40,8 @@ def _log_tail(config: AppConfig, record) -> str:
 
 def _latest_validator_result(config: AppConfig, target: str) -> dict[str, Any] | None:
     latest = latest_deployment_record(config, target, record_type="deployment")
+    if latest and "rollback_validator_result" in latest:
+        return latest["rollback_validator_result"]
     if latest and "validator_result" in latest:
         return latest["validator_result"]
     rollback = latest_deployment_record(config, target, record_type="rollback")
@@ -55,6 +58,23 @@ def _runtime_root_payload(record, render_details: dict[str, Any]) -> dict[str, s
         "runtime_root": str(record.runtime_root or ""),
         "runtime_root_source_dir": rendered_runtime_root_dir,
         "gateway_port": str(render_details.get("gateway_port") or ""),
+    }
+
+
+def _shared_network_payload(record, render_details: dict[str, Any]) -> dict[str, str]:
+    network_name = str(render_details.get("internal_network_name") or "")
+    if not network_name and record.target_class in {"runtime", "shared_service"}:
+        network_name = "moltbox_moltbox_internal"
+    return {"internal_network_name": network_name} if network_name else {}
+
+
+def _tools_config_payload(config: AppConfig, record, render_details: dict[str, Any]) -> dict[str, str]:
+    rendered_config_path = str(render_details.get("rendered_config_path") or "")
+    if record.id != "tools" or not rendered_config_path:
+        return {}
+    return {
+        "rendered_config_path": rendered_config_path,
+        "control_plane_config_destination": str(config.layout.policy_path),
     }
 
 
@@ -178,7 +198,11 @@ def deploy_target(config: AppConfig, target: str) -> dict[str, Any]:
             "compose_project": record.compose_project,
             "container_names": record.container_names,
             "remove_orphans": record.target_class != "shared_service",
+            "replace_existing_containers": True,
+            "force_recreate": record.target_class == "tools",
             **_runtime_root_payload(record, render_details),
+            **_shared_network_payload(record, render_details),
+            **_tools_config_payload(config, record, render_details),
             "build_images": _render_requires_build(render_dir),
         },
     )
@@ -193,6 +217,7 @@ def deploy_target(config: AppConfig, target: str) -> dict[str, Any]:
     )
     rollback_performed = False
     rollback_result: dict[str, Any] | None = None
+    rollback_validator_result: dict[str, Any] | None = None
     if snapshot_id and (not deploy_result.get("ok") or not validate_result.get("ok")):
         rollback_performed = True
         rollback_result = run_primitive(
@@ -204,10 +229,25 @@ def deploy_target(config: AppConfig, target: str) -> dict[str, Any]:
                 "snapshot_dir": str(target_snapshots_dir(config, record.id) / snapshot_id),
                 "compose_project": record.compose_project,
                 "container_names": record.container_names,
+                "replace_existing_containers": True,
+                "force_recreate": True,
+                **_shared_network_payload(record, render_details),
             },
         )
+        if rollback_result.get("ok"):
+            rollback_validate_result = run_primitive(
+                config,
+                "validate_target",
+                {
+                    "target": record.id,
+                    "validator_key": record.validator_key,
+                    "container_names": record.container_names,
+                },
+            )
+            rollback_validator_result = rollback_validate_result.get("details")
     log_tail = _log_tail(config, record)
     ok = bool(deploy_result.get("ok") and validate_result.get("ok"))
+    deployment_validator_result = validate_result.get("details")
     payload = {
         "ok": ok,
         "record_type": "deployment",
@@ -225,7 +265,8 @@ def deploy_target(config: AppConfig, target: str) -> dict[str, Any]:
         "new_container_ids": list((deploy_result.get("details") or {}).get("new_container_ids") or []),
         "deployment_status": "success" if ok else "failed",
         "rollback_performed": rollback_performed,
-        "validator_result": validate_result.get("details"),
+        "validator_result": rollback_validator_result or deployment_validator_result,
+        "deployment_validator_result": deployment_validator_result,
         "render_manifest_path": render_manifest_path,
         "log_tail": log_tail,
     }
@@ -235,6 +276,8 @@ def deploy_target(config: AppConfig, target: str) -> dict[str, Any]:
         payload["recovery_message"] = f"inspect deployment logs for target '{record.id}' and retry after resolving the failure"
         if rollback_result is not None:
             payload["rollback_result"] = rollback_result
+        if rollback_validator_result is not None:
+            payload["rollback_validator_result"] = rollback_validator_result
     write_deployment_record(config, record.id, deployment_id, payload)
     return payload
 
@@ -277,6 +320,9 @@ def rollback_target(config: AppConfig, target: str) -> dict[str, Any]:
             "snapshot_dir": str(target_snapshots_dir(config, record.id) / snapshot_id),
             "compose_project": record.compose_project,
             "container_names": record.container_names,
+            "replace_existing_containers": True,
+            "force_recreate": True,
+            **_shared_network_payload(record, {"internal_network_name": "moltbox_moltbox_internal"}),
         },
     )
     validate_result = run_primitive(
@@ -356,6 +402,7 @@ def runtime_lifecycle(config: AppConfig, env: str, action: str) -> dict[str, Any
             "compose_project": record.compose_project,
             "container_names": record.container_names,
             **(_runtime_root_payload(record, render_details) if action in {"start", "restart"} else {}),
+            **_shared_network_payload(record, render_details),
         },
     )
     return {

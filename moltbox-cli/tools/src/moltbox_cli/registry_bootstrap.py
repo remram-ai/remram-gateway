@@ -79,7 +79,7 @@ def _runtime_target(config: AppConfig, target_id: str, display_name: str, hostna
 def _shared_service_target(config: AppConfig, target_id: str, display_name: str) -> TargetRecord:
     now = _iso_now()
     shared_root = config.layout.shared_dir / target_id
-    container_name = f"moltbox-{target_id}"
+    container_name = "moltbox-caddy" if target_id == "ssl" else f"moltbox-{target_id}"
     return TargetRecord(
         id=target_id,
         target_class="shared_service",
@@ -96,7 +96,7 @@ def _shared_service_target(config: AppConfig, target_id: str, display_name: str)
         created_at=now,
         updated_at=now,
         metadata={
-            **_base_metadata(config, target_id),
+            **_base_metadata(config, target_id, aliases=["caddy"] if target_id == "ssl" else None),
             "shared_root": display_path(shared_root),
         },
     )
@@ -107,7 +107,7 @@ def canonical_target_records(config: AppConfig) -> list[TargetRecord]:
         _tools_target(config),
         _shared_service_target(config, "ollama", "Ollama"),
         _shared_service_target(config, "opensearch", "OpenSearch"),
-        _shared_service_target(config, "caddy", "Caddy"),
+        _shared_service_target(config, "ssl", "SSL Ingress"),
         _runtime_target(config, "dev", "Development Runtime", "moltbox-dev"),
         _runtime_target(config, "test", "Test Runtime", "moltbox-test"),
         _runtime_target(config, "prod", "Production Runtime", "moltbox-prod"),
@@ -138,6 +138,16 @@ def _migrate_legacy_tools_record(config: AppConfig) -> None:
                 break
     for legacy_path in legacy_paths:
         legacy_path.unlink(missing_ok=True)
+
+
+def _migrate_legacy_ssl_record(config: AppConfig) -> None:
+    ssl_path = target_file_path(config.layout, "ssl")
+    legacy_path = target_file_path(config.layout, "caddy")
+    if not ssl_path.exists() and legacy_path.exists():
+        legacy_payload = _read_target_payload(legacy_path)
+        if legacy_payload is not None:
+            write_json_file(ssl_path, legacy_payload)
+    legacy_path.unlink(missing_ok=True)
 
 
 def _merge_aliases(canonical_id: str, canonical_aliases: list[str]) -> list[str]:
@@ -193,6 +203,7 @@ def _reconcile_target_record(canonical: TargetRecord, existing_payload: dict[str
 def ensure_registry_bootstrap(config: AppConfig) -> list[TargetRecord]:
     ensure_host_layout(config.layout)
     _migrate_legacy_tools_record(config)
+    _migrate_legacy_ssl_record(config)
     records: list[TargetRecord] = []
     for canonical in canonical_target_records(config):
         path = target_file_path(config.layout, canonical.id)

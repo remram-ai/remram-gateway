@@ -56,7 +56,8 @@ def test_tools_inspect_lists_targets(tmp_path: Path) -> None:
     assert completed.returncode == 0
     payload = json.loads(completed.stdout)
     target_ids = {target["id"] for target in payload["targets"]}
-    assert {"tools", "ollama", "dev"}.issubset(target_ids)
+    assert {"tools", "ollama", "dev", "ssl"}.issubset(target_ids)
+    assert "caddy" not in target_ids
     assert "control-plane" not in target_ids
 
 
@@ -92,6 +93,18 @@ def test_tools_inspect_reconciles_legacy_registry(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
+    (target_dir / "caddy.json").write_text(
+        json.dumps(
+            {
+                "id": "caddy",
+                "display_name": "Caddy",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-01T00:00:00+00:00",
+                "metadata": {},
+            }
+        ),
+        encoding="utf-8",
+    )
 
     completed = run_cli(
         "tools",
@@ -106,16 +119,22 @@ def test_tools_inspect_reconciles_legacy_registry(tmp_path: Path) -> None:
     payload = json.loads(completed.stdout)
     target_ids = {target["id"] for target in payload["targets"]}
     assert "tools" in target_ids
+    assert "ssl" in target_ids
     assert "control-plane" not in target_ids
 
     stored_tools = json.loads((target_dir / "tools.json").read_text(encoding="utf-8"))
     stored_ollama = json.loads((target_dir / "ollama.json").read_text(encoding="utf-8"))
+    stored_ssl = json.loads((target_dir / "ssl.json").read_text(encoding="utf-8"))
     assert stored_tools["id"] == "tools"
     assert stored_tools["asset_path"] == "tools"
     assert "control-plane" in stored_tools["metadata"]["aliases"]
     assert stored_ollama["compose_project"] == "moltbox"
     assert stored_ollama["container_names"] == ["moltbox-ollama"]
+    assert stored_ssl["id"] == "ssl"
+    assert stored_ssl["container_names"] == ["moltbox-caddy"]
+    assert "caddy" in stored_ssl["metadata"]["aliases"]
     assert not (target_dir / "control-plane.json").exists()
+    assert not (target_dir / "caddy.json").exists()
 
 
 def test_runtime_rejects_reversed_legacy_order(tmp_path: Path) -> None:

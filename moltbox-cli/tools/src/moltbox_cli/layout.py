@@ -12,6 +12,7 @@ CANONICAL_LOG_DIRS = (
     "openclaw-prod",
     "ollama",
     "opensearch",
+    "ssl",
     "caddy",
 )
 
@@ -51,7 +52,10 @@ class HostLayout:
     root: Path
     control_plane_dir: Path
     config_path: Path
+    policy_path: Path
     state_dir: Path
+    ssl_state_dir: Path
+    ssl_routes_path: Path
     target_registry_dir: Path
     runtime_state_file: Path
     pid_file: Path
@@ -69,7 +73,10 @@ class HostLayout:
             "root": str(self.root),
             "control_plane_dir": str(self.control_plane_dir),
             "config_path": str(self.config_path),
+            "policy_path": str(self.policy_path),
             "state_dir": str(self.state_dir),
+            "ssl_state_dir": str(self.ssl_state_dir),
+            "ssl_routes_path": str(self.ssl_routes_path),
             "target_registry_dir": str(self.target_registry_dir),
             "runtime_state_file": str(self.runtime_state_file),
             "pid_file": str(self.pid_file),
@@ -123,16 +130,21 @@ def build_host_layout(
     root: Path | None = None,
     runtime_artifacts_root: Path | None = None,
     config_path: Path | None = None,
+    policy_path: Path | None = None,
 ) -> HostLayout:
     state_root = (root or (Path.home() / ".remram")).expanduser().resolve()
     control_plane_dir = state_root / "tools"
     runtime_root = (runtime_artifacts_root or (Path.home() / "Moltbox")).expanduser().resolve()
     resolved_config_path = (config_path or (control_plane_dir / "config.yaml")).expanduser().resolve()
+    resolved_policy_path = (policy_path or (control_plane_dir / "control-plane-policy.yaml")).expanduser().resolve()
     return HostLayout(
         root=state_root,
         control_plane_dir=control_plane_dir,
         config_path=resolved_config_path,
+        policy_path=resolved_policy_path,
         state_dir=state_root / "state",
+        ssl_state_dir=state_root / "state" / "ssl",
+        ssl_routes_path=state_root / "state" / "ssl" / "routes.json",
         target_registry_dir=state_root / "state" / "targets",
         runtime_state_file=control_plane_dir / "runtime.json",
         pid_file=control_plane_dir / "pid",
@@ -152,6 +164,7 @@ def ensure_host_layout(layout: HostLayout) -> HostLayout:
         layout.root,
         layout.control_plane_dir,
         layout.state_dir,
+        layout.ssl_state_dir,
         layout.target_registry_dir,
         layout.tools_dir,
         layout.host_tools_dir,

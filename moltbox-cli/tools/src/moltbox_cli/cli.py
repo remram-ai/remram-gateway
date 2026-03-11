@@ -63,6 +63,7 @@ def _dispatch_target_action(config, target: str, verb: str) -> None:  # noqa: AN
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="moltbox", description="Canonical MoltBox operator CLI.")
     parser.add_argument("--config-path")
+    parser.add_argument("--policy-path")
     parser.add_argument("--state-root")
     parser.add_argument("--runtime-artifacts-root")
     parser.add_argument("--internal-host")
@@ -74,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     tools.add_argument("verb", choices=sorted(TOOLS_VERBS), help="Tooling verb.")
 
     host = subparsers.add_parser("host", help="Operate host services on the MoltBox machine.")
-    host.add_argument("service", help="Host service such as caddy, ollama, or opensearch.")
+    host.add_argument("service", help="Host service such as ssl, ollama, or opensearch.")
     host.add_argument("verb", choices=sorted(HOST_VERBS), help="Host-service verb.")
 
     runtime = subparsers.add_parser("runtime", help="Operate OpenClaw runtime environments.")

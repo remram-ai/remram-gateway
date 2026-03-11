@@ -1,11 +1,12 @@
 ALIASES = {
     "cli": "tools",
+    "caddy": "ssl",
     "control": "tools",
     "control-plane": "tools",
 }
 
 RUNTIME_TARGETS = {"dev", "test", "prod"}
-HOST_TARGETS = {"ollama", "opensearch", "caddy"}
+HOST_TARGETS = {"ollama", "opensearch", "ssl"}
 TOOLS_TARGET = "tools"
 
 

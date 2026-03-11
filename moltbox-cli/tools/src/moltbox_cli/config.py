@@ -31,6 +31,7 @@ def _deep_get(payload: dict[str, Any], *keys: str) -> Any:
 @dataclass(frozen=True)
 class AppConfig:
     config_path: Path
+    policy_path: Path
     state_root: Path
     runtime_artifacts_root: Path
     internal_host: str
@@ -41,6 +42,7 @@ class AppConfig:
     def as_dict(self) -> dict[str, object]:
         return {
             "config_path": str(self.config_path),
+            "policy_path": str(self.policy_path),
             "state_root": str(self.state_root),
             "runtime_artifacts_root": str(self.runtime_artifacts_root),
             "internal_host": self.internal_host,
@@ -142,6 +144,12 @@ def resolve_config(args: Any | None = None) -> AppConfig:
         _deep_get(config_payload, "paths", "state_root"),
         state_root_default,
     )
+    policy_path = _resolve_path(
+        getattr(args, "policy_path", None),
+        ("MOLTBOX_POLICY_PATH", "REMRAM_POLICY_PATH"),
+        _deep_get(config_payload, "policy", "path"),
+        state_root / "tools" / "control-plane-policy.yaml",
+    )
     runtime_artifacts_root = _resolve_path(
         getattr(args, "runtime_artifacts_root", None),
         ("MOLTBOX_RUNTIME_ROOT", "REMRAM_RUNTIME_ROOT"),
@@ -167,9 +175,15 @@ def resolve_config(args: Any | None = None) -> AppConfig:
         "moltbox",
     )
 
-    layout = build_host_layout(root=state_root, runtime_artifacts_root=runtime_artifacts_root, config_path=config_path)
+    layout = build_host_layout(
+        root=state_root,
+        runtime_artifacts_root=runtime_artifacts_root,
+        config_path=config_path,
+        policy_path=policy_path,
+    )
     return AppConfig(
         config_path=config_path,
+        policy_path=policy_path,
         state_root=state_root,
         runtime_artifacts_root=runtime_artifacts_root,
         internal_host=internal_host,

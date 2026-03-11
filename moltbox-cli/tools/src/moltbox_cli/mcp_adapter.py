@@ -7,9 +7,11 @@ import sys
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from .config import AppConfig
 from .errors import MoltboxCliError
+from .mcp_policy import allowed_host_verbs, allowed_runtime_verbs, allowed_tools_verbs, denial_payload, load_mcp_policy
 from .target_resolution import resolve_target_identifier, target_domain
 
 
@@ -27,6 +29,8 @@ def _config_flags(config: AppConfig) -> list[str]:
     return [
         "--config-path",
         str(config.config_path),
+        "--policy-path",
+        str(config.policy_path),
         "--state-root",
         str(config.state_root),
         "--runtime-artifacts-root",
@@ -72,23 +76,65 @@ def _status_args(target: str) -> list[str]:
     return [domain, resolved, "status"]
 
 
+def dispatch_tools_action(config: AppConfig, verb: str) -> dict[str, Any]:
+    policy, source = load_mcp_policy(config)
+    if verb not in allowed_tools_verbs(policy):
+        return denial_payload(domain="tools", verb=verb, policy_source=source, target="tools")
+    return invoke_cli_json(config, ["tools", verb])
+
+
+def dispatch_host_action(config: AppConfig, service: str, verb: str) -> dict[str, Any]:
+    policy, source = load_mcp_policy(config)
+    if verb not in allowed_host_verbs(policy):
+        return denial_payload(domain="host", verb=verb, policy_source=source, target=resolve_target_identifier(service))
+    return invoke_cli_json(config, ["host", service, verb])
+
+
+def dispatch_runtime_action(config: AppConfig, environment: str, verb: str) -> dict[str, Any]:
+    resolved = resolve_target_identifier(environment)
+    policy, source = load_mcp_policy(config)
+    if verb not in allowed_runtime_verbs(policy, resolved):
+        return denial_payload(domain="runtime", verb=verb, policy_source=source, environment=resolved)
+    return invoke_cli_json(config, ["runtime", resolved, verb])
+
+
 def create_mcp_server(config: AppConfig) -> FastMCP:
-    mcp = FastMCP("MoltBox CLI", stateless_http=True, json_response=True)
+    policy, _ = load_mcp_policy(config)
+    mcp = FastMCP(
+        "MoltBox CLI",
+        stateless_http=True,
+        json_response=True,
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
 
-    @mcp.tool(description="Return the MoltBox CLI version information.")
-    async def version() -> dict:
-        return invoke_cli_json(config, ["tools", "version"])
+    if "version" in allowed_tools_verbs(policy):
+        @mcp.tool(description="Return the MoltBox CLI version information.")
+        async def tools_version() -> dict:
+            return dispatch_tools_action(config, "version")
 
-    @mcp.tool(description="Return the MoltBox CLI health model.")
-    async def health() -> dict:
-        return invoke_cli_json(config, ["tools", "health"])
+    if "health" in allowed_tools_verbs(policy):
+        @mcp.tool(description="Return the MoltBox CLI health model.")
+        async def tools_health() -> dict:
+            return dispatch_tools_action(config, "health")
 
-    @mcp.tool(description="List the registered MoltBox targets.")
-    async def list_targets() -> dict:
-        return invoke_cli_json(config, ["tools", "inspect"])
+    if "status" in allowed_tools_verbs(policy):
+        @mcp.tool(description="Return the MoltBox tools status model.")
+        async def tools_status() -> dict:
+            return dispatch_tools_action(config, "status")
 
-    @mcp.tool(description="Read target status for a canonical target identifier.")
-    async def status(target: str) -> dict:
-        return invoke_cli_json(config, _status_args(target))
+    if "inspect" in allowed_tools_verbs(policy):
+        @mcp.tool(description="List the registered MoltBox targets.")
+        async def tools_inspect() -> dict:
+            return dispatch_tools_action(config, "inspect")
+
+    if allowed_host_verbs(policy):
+        @mcp.tool(description="Execute an allowed host action for a canonical shared-service target.")
+        async def host_action(service: str, verb: str) -> dict:
+            return dispatch_host_action(config, service, verb)
+
+    if any(allowed_runtime_verbs(policy, env) for env in ("dev", "test", "prod")):
+        @mcp.tool(description="Execute an allowed runtime action for a canonical environment target.")
+        async def runtime_action(environment: str, verb: str) -> dict:
+            return dispatch_runtime_action(config, environment, verb)
 
     return mcp

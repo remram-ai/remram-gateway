@@ -121,6 +121,43 @@ def _compose_command(render_dir: Path, compose_project: str, args: list[str]) ->
     return command
 
 
+def _compose_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    for key in (
+        "OPENCLAW_IMAGE",
+        "OPENCLAW_PORT",
+        "MOLTBOX_TOOLS_IMAGE",
+        "MOLTBOX_TOOLS_PORT",
+        "MOLTBOX_SSL_IMAGE",
+        "MOLTBOX_SSL_HTTP_PORT",
+        "MOLTBOX_SSL_HTTPS_PORT",
+        "OLLAMA_IMAGE",
+        "OLLAMA_BASE_IMAGE",
+        "OPENSEARCH_IMAGE",
+        "OPENSEARCH_BASE_IMAGE",
+        "OPENSEARCH_JAVA_OPTS",
+        "DISCOVERY_TYPE",
+        "PLUGINS_SECURITY_DISABLED",
+    ):
+        env.pop(key, None)
+    return env
+
+
+def _run_compose_command(command: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, capture_output=True, text=True, check=False, env=_compose_environment())
+
+
+def _ensure_docker_network(network_name: str) -> None:
+    if not network_name:
+        return
+    inspect_completed = _run_command(["docker", "network", "inspect", network_name])
+    if inspect_completed.returncode == 0:
+        return
+    create_completed = _run_command(["docker", "network", "create", network_name])
+    if create_completed.returncode != 0:
+        raise RuntimeError(create_completed.stderr.strip() or f"failed to create docker network '{network_name}'")
+
+
 def _copy_tree(source: Path, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     for path in sorted(source.rglob("*")):
@@ -131,6 +168,11 @@ def _copy_tree(source: Path, destination: Path) -> None:
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(path.read_bytes())
+
+
+def _copy_file(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(source.read_bytes())
 
 
 def _sync_runtime_root(payload: dict[str, Any]) -> None:
@@ -151,12 +193,37 @@ def _sync_runtime_root(payload: dict[str, Any]) -> None:
     _copy_tree(source_dir, runtime_root)
 
 
+def _sync_tools_config(payload: dict[str, Any]) -> None:
+    rendered_config_raw = str(payload.get("rendered_config_path") or "")
+    destination_raw = str(payload.get("control_plane_config_destination") or "")
+    if not rendered_config_raw or not destination_raw:
+        return
+    rendered_config_path = Path(rendered_config_raw)
+    destination_path = Path(destination_raw)
+    if not rendered_config_path.exists():
+        raise FileNotFoundError(f"rendered tools config '{rendered_config_path}' was not found")
+    _copy_file(rendered_config_path, destination_path)
+
+
+def _remove_existing_containers(container_names: list[str]) -> list[str]:
+    removed: list[str] = []
+    for name in container_names:
+        if _container_inspect(name) is None:
+            continue
+        completed = _run_command(["docker", "rm", "-f", name])
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr.strip() or f"failed to remove existing container '{name}'")
+        removed.append(name)
+    return removed
+
+
 def _build_inline_config(payload: dict[str, Any]):  # noqa: ANN202
     from .config import AppConfig
     from .layout import build_host_layout
 
     return AppConfig(
         config_path=Path(payload["config_path"]),
+        policy_path=Path(payload.get("policy_path") or (Path(payload["state_root"]) / "tools" / "control-plane-policy.yaml")),
         state_root=Path(payload["state_root"]),
         runtime_artifacts_root=Path(payload["runtime_artifacts_root"]),
         internal_host=str(payload["internal_host"]),
@@ -166,6 +233,7 @@ def _build_inline_config(payload: dict[str, Any]):  # noqa: ANN202
             root=Path(payload["state_root"]),
             runtime_artifacts_root=Path(payload["runtime_artifacts_root"]),
             config_path=Path(payload["config_path"]),
+            policy_path=Path(payload.get("policy_path") or (Path(payload["state_root"]) / "tools" / "control-plane-policy.yaml")),
         ),
     )
 
@@ -213,9 +281,10 @@ def _compose_lifecycle(operation: str, payload: dict[str, Any], compose_args: li
         return _result(operation, False, errors=["docker_not_available"])
     if operation in {"start_runtime", "restart_runtime"}:
         _sync_runtime_root(payload)
+    _ensure_docker_network(str(payload.get("internal_network_name") or ""))
     render_dir = Path(str(payload["render_dir"]))
     command = _compose_command(render_dir, str(payload["compose_project"]), compose_args)
-    completed = _run_command(command)
+    completed = _run_compose_command(command)
     ok = completed.returncode == 0
     return _result(
         operation,
@@ -254,14 +323,21 @@ def _deploy_target(payload: dict[str, Any]) -> dict[str, Any]:
     if not _docker_available():
         return _result("deploy_target", False, errors=["docker_not_available"])
     _sync_runtime_root(payload)
+    _sync_tools_config(payload)
+    _ensure_docker_network(str(payload.get("internal_network_name") or ""))
+    removed_containers: list[str] = []
+    if bool(payload.get("replace_existing_containers", False)):
+        removed_containers = _remove_existing_containers([str(item) for item in payload.get("container_names", [])])
     render_dir = Path(str(payload["render_dir"]))
     compose_args = ["up", "-d"]
     if bool(payload.get("build_images", False)):
         compose_args.append("--build")
+    if bool(payload.get("force_recreate", False)):
+        compose_args.append("--force-recreate")
     if bool(payload.get("remove_orphans", True)):
         compose_args.append("--remove-orphans")
     command = _compose_command(render_dir, str(payload["compose_project"]), compose_args)
-    completed = _run_command(command)
+    completed = _run_compose_command(command)
     ok = completed.returncode == 0
     containers = _container_details([str(item) for item in payload.get("container_names", [])])
     return _result(
@@ -271,6 +347,7 @@ def _deploy_target(payload: dict[str, Any]) -> dict[str, Any]:
             "compose_command": command,
             "compose_stdout": completed.stdout.strip(),
             "compose_stderr": completed.stderr.strip(),
+            "removed_existing_containers": removed_containers,
             "new_container_ids": [item["container_id"] for item in containers if item["container_id"]],
         },
         errors=[] if ok else [completed.stderr.strip() or "docker_compose_up_failed"],
@@ -346,8 +423,15 @@ def _restore_target_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     snapshot_dir = Path(str(payload["snapshot_dir"]))
     render_dir = snapshot_dir / "rendered"
     metadata = read_json_file(snapshot_dir / "metadata.json", default={}) or {}
-    command = _compose_command(render_dir, str(payload["compose_project"]), ["up", "-d", "--force-recreate"])
-    completed = _run_command(command)
+    _ensure_docker_network(str(payload.get("internal_network_name") or ""))
+    removed_containers: list[str] = []
+    if bool(payload.get("replace_existing_containers", False)):
+        removed_containers = _remove_existing_containers([str(item) for item in payload.get("container_names", [])])
+    compose_args = ["up", "-d"]
+    if bool(payload.get("force_recreate", True)):
+        compose_args.append("--force-recreate")
+    command = _compose_command(render_dir, str(payload["compose_project"]), compose_args)
+    completed = _run_compose_command(command)
     ok = completed.returncode == 0
     containers = _container_details([str(item) for item in metadata.get("container_names", payload.get("container_names", []))])
     return _result(
@@ -357,17 +441,13 @@ def _restore_target_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
             "snapshot_id": metadata.get("snapshot_id", payload.get("snapshot_id")),
             "snapshot_path": str(snapshot_dir),
             "restored_container_ids": [item["container_id"] for item in containers if item["container_id"]],
+            "removed_existing_containers": removed_containers,
             "compose_command": command,
             "compose_stdout": completed.stdout.strip(),
             "compose_stderr": completed.stderr.strip(),
         },
         errors=[] if ok else [completed.stderr.strip() or "docker_compose_restore_failed"],
     )
-
-
-def _validate_target(payload: dict[str, Any]) -> dict[str, Any]:
-    if not _docker_available():
-        return _result("validate_target", False, errors=["docker_not_available"])
 def _validation_pending(containers: list[dict[str, Any]]) -> bool:
     for container in containers:
         if not container["present"]:

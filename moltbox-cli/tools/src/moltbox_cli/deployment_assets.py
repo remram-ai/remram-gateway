@@ -10,6 +10,7 @@ from .jsonio import write_json_file
 from .layout import build_repo_layout
 from .operation_ids import utc_now_iso
 from .registry import get_target
+from .ssl_ingress import build_ssl_render_context
 from .target_resolution import canonical_cli_command
 from .versioning import resolve_version_info
 
@@ -38,14 +39,23 @@ def config_path_for_target(target_id: str, target_class: str) -> Path | None:
     config_dir = build_repo_layout().config_dir
     if target_class == "runtime":
         return config_dir
+    if target_id == "ssl":
+        return config_dir / "ssl"
     if target_id == "opensearch":
         return config_dir / "opensearch.yml"
+    if target_id == "tools":
+        return config_dir / "control-plane-policy.yaml"
     return None
 
 
 def rendered_output_dir(config: AppConfig, target: str, profile: str | None) -> Path:
     bucket = profile if profile else "shared"
     return config.layout.deploy_dir / "rendered" / bucket / target
+
+
+def _runtime_render_dir(config: AppConfig, target: str, profile: str | None) -> Path:
+    timestamp = utc_now_iso().replace(":", "").replace("-", "").replace(".", "")
+    return rendered_output_dir(config, target, profile) / timestamp
 
 
 def _existing_owner(path: Path) -> tuple[str, str]:
@@ -77,6 +87,7 @@ def _docker_socket_gid(default_gid: str) -> str:
 
 def render_context(config: AppConfig, target: str) -> dict[str, str]:
     record = get_target(config, target)
+    repo_root = build_repo_layout().repo_root
     runtime_root = record.runtime_root or ""
     shared_root = str(config.layout.shared_dir / target) if record.target_class == "shared_service" else ""
     container_uid, container_gid = _existing_owner(config.state_root)
@@ -86,7 +97,7 @@ def render_context(config: AppConfig, target: str) -> dict[str, str]:
     }.get(record.id, "")
     gateway_port = {
         "tools": "7474",
-        "dev": "18789",
+        "dev": "18790",
         "test": "28789",
         "prod": "38789",
     }.get(record.id, "")
@@ -96,9 +107,12 @@ def render_context(config: AppConfig, target: str) -> dict[str, str]:
         "compose_project": record.compose_project,
         "container_name": record.container_names[0] if record.container_names else record.id,
         "runtime_root": runtime_root,
+        "repo_root": str(repo_root),
         "shared_root": shared_root,
         "data_volume_name": data_volume_name,
-        "internal_network_name": "moltbox_moltbox_internal" if record.target_class == "shared_service" else "",
+        "internal_network_name": "moltbox_moltbox_internal"
+        if record.target_class in {"shared_service", "runtime"}
+        else "",
         "state_root": str(config.state_root),
         "runtime_artifacts_root": str(config.runtime_artifacts_root),
         "gateway_port": gateway_port,
@@ -150,6 +164,13 @@ def _render_mapped_files(
     return source_paths, output_root
 
 
+def _render_config_source(source: Path, output_root: Path, context: dict[str, str]) -> tuple[list[str], Path]:
+    if source.is_dir():
+        rendered_root = output_root / source.name
+        return _render_tree(source, rendered_root, context), rendered_root
+    return _render_mapped_files([(source, Path(source.name))], output_root, context)
+
+
 def render_target(config: AppConfig, target: str, profile: str | None = None) -> dict[str, Any]:
     record = get_target(config, target)
     render_profile = profile or record.profile
@@ -180,7 +201,11 @@ def render_target(config: AppConfig, target: str, profile: str | None = None) ->
             target=record.id,
             config_path=str(config_source) if config_source is not None else "",
         )
-    output_dir = rendered_output_dir(config, record.id, render_profile)
+    output_dir = (
+        _runtime_render_dir(config, record.id, render_profile)
+        if record.target_class == "runtime"
+        else rendered_output_dir(config, record.id, render_profile)
+    )
     if output_dir.exists():
         for child in sorted(output_dir.rglob("*"), reverse=True):
             if child.is_file():
@@ -190,6 +215,8 @@ def render_target(config: AppConfig, target: str, profile: str | None = None) ->
     output_dir.mkdir(parents=True, exist_ok=True)
 
     context = render_context(config, record.id)
+    if record.id == "ssl":
+        context.update(build_ssl_render_context(config))
     source_paths = _render_tree(asset_dir, output_dir, context)
     config_source_paths: list[str] = []
     rendered_config_path: Path | None = None
@@ -201,8 +228,8 @@ def render_target(config: AppConfig, target: str, profile: str | None = None) ->
                 context,
             )
         else:
-            config_source_paths, rendered_config_path = _render_mapped_files(
-                [(config_source, Path(config_source.name))],
+            config_source_paths, rendered_config_path = _render_config_source(
+                config_source,
                 output_dir / "config",
                 context,
             )
@@ -226,10 +253,14 @@ def render_target(config: AppConfig, target: str, profile: str | None = None) ->
     }
     if context.get("gateway_port"):
         payload["gateway_port"] = context["gateway_port"]
+    if context.get("internal_network_name"):
+        payload["internal_network_name"] = context["internal_network_name"]
     if config_source is not None and rendered_config_path is not None:
         payload["config_path"] = str(config_source)
         if record.target_class == "runtime":
             payload["rendered_runtime_root_dir"] = str(rendered_config_path)
+        elif config_source.is_dir():
+            payload["rendered_config_dir"] = str(rendered_config_path)
         else:
             payload["rendered_config_path"] = str(rendered_config_path)
     return payload

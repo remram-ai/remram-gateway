@@ -1,6 +1,9 @@
 services:
   tools:
     image: "${MOLTBOX_TOOLS_IMAGE:-moltbox-tools:local}"
+    build:
+      context: "{{ repo_root }}"
+      dockerfile: "{{ repo_root }}/moltbox/containers/tools/Dockerfile"
     container_name: "{{ container_name }}"
     user: "{{ container_uid }}:{{ container_gid }}"
     group_add:
@@ -12,6 +15,7 @@ services:
       MOLTBOX_CONFIG_PATH: "{{ state_root }}/tools/config.yaml"
       MOLTBOX_INTERNAL_HOST: "0.0.0.0"
       MOLTBOX_INTERNAL_PORT: "7474"
+      MOLTBOX_POLICY_PATH: "{{ state_root }}/tools/control-plane-policy.yaml"
       MOLTBOX_STATE_ROOT: "{{ state_root }}"
       MOLTBOX_TOOLS_PORT: "${MOLTBOX_TOOLS_PORT:-{{ gateway_port }}}"
       MOLTBOX_RUNTIME_ROOT: "{{ runtime_artifacts_root }}"

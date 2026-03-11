@@ -58,9 +58,9 @@ def test_runtime_render_uses_runtime_container_assets(tmp_path: Path, monkeypatc
     config_path = rendered["config_path"].replace("/", "\\")
     assert "moltbox\\containers\\runtimes\\openclaw" in asset_path
     assert "moltbox\\config" in config_path
-    assert Path(rendered["output_dir"]) == config.layout.deploy_dir / "rendered" / "dev" / "dev"
+    assert Path(rendered["output_dir"]).parent == config.layout.deploy_dir / "rendered" / "dev" / "dev"
     assert Path(rendered["rendered_runtime_root_dir"]) == Path(rendered["output_dir"]) / "runtime-root"
-    assert rendered["gateway_port"] == "18789"
+    assert rendered["gateway_port"] == "18790"
     manifest = read_json_file(Path(rendered["render_manifest_path"]))
     source_paths = [path.replace("/", "\\") for path in manifest["source_asset_paths"]]
     config_source_paths = [path.replace("/", "\\") for path in manifest["source_config_paths"]]
@@ -70,7 +70,9 @@ def test_runtime_render_uses_runtime_container_assets(tmp_path: Path, monkeypatc
     assert any(path.endswith("moltbox\\config\\openclaw.json") for path in config_source_paths)
     assert any(path.endswith("moltbox\\config\\openclaw\\agents.yaml") for path in config_source_paths)
     compose_text = (Path(rendered["output_dir"]) / "compose.yml").read_text(encoding="utf-8")
-    assert "./config/openclaw:/app/config/openclaw:ro" not in compose_text
+    assert "./config/openclaw:/app/config/openclaw:ro" in compose_text
+    assert "OPENCLAW_CONFIG_DIR: \"/app/config/openclaw\"" in compose_text
+    assert "name: \"moltbox_moltbox_internal\"" in compose_text
     runtime_root_dir = Path(rendered["rendered_runtime_root_dir"])
     assert (runtime_root_dir / "openclaw.json").exists()
     assert (runtime_root_dir / "agents.yaml").exists()
@@ -143,9 +145,13 @@ def test_runtime_lifecycle_reports_new_cli_command(tmp_path: Path, monkeypatch) 
         if name == "render_assets":
             return {
                 "ok": True,
-                "details": {"output_dir": str(config.layout.deploy_dir / "rendered" / "dev" / "dev")},
+                "details": {
+                    "output_dir": str(config.layout.deploy_dir / "rendered" / "dev" / "dev"),
+                    "internal_network_name": "moltbox_moltbox_internal",
+                },
             }
         if name == "restart_runtime":
+            assert payload["internal_network_name"] == "moltbox_moltbox_internal"
             return {"ok": True, "stdout": "", "stderr": "", "details": {}}
         if name == "tail_target_logs":
             return {"ok": True, "details": {"log_tail": "ready"}}
