@@ -3,6 +3,9 @@ services:
     image: "${OPENCLAW_IMAGE:-openclaw:local}"
     container_name: "{{ container_name }}"
     restart: unless-stopped
+    env_file:
+      - "{{ runtime_root }}/.env"
+      - "{{ runtime_root }}/container.env"
     ports:
       - "${OPENCLAW_PORT:-{{ gateway_port }}}:18789"
     volumes:

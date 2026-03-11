@@ -227,6 +227,11 @@ def render_target(config: AppConfig, target: str, profile: str | None = None) ->
                 output_dir / "runtime-root",
                 context,
             )
+            openclaw_config_dir = config_source / "openclaw"
+            if openclaw_config_dir.exists():
+                config_source_paths.extend(
+                    _render_tree(openclaw_config_dir, output_dir / "config" / "openclaw", context)
+                )
         else:
             config_source_paths, rendered_config_path = _render_config_source(
                 config_source,

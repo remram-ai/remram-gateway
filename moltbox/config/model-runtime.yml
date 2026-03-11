@@ -17,11 +17,13 @@ runtime:
   deep_thinking:
     provider: together
     model_env: DEEP_THINKING_MODEL
+    api_key_env: TOGETHER_API_KEY
     invoke_mode: tool_explicit_only
 
   coding:
     provider: together
     model_env: CODING_MODEL
+    api_key_env: TOGETHER_API_KEY
     invoke_mode: deterministic_tool_only
 
 governance:

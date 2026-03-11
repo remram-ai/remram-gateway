@@ -1,0 +1,27 @@
+{
+  "id": "remram-runtime",
+  "name": "Remram Runtime",
+  "description": "Remram semantic routing and request preflight inside the OpenClaw reply lifecycle.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "semanticRouterConfigPath": {
+        "type": "string"
+      },
+      "modelRuntimePath": {
+        "type": "string"
+      },
+      "debugDir": {
+        "type": "string"
+      },
+      "responseFooter": {
+        "type": "string",
+        "enum": [
+          "off",
+          "concise"
+        ]
+      }
+    }
+  }
+}

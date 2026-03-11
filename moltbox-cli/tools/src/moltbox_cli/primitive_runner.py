@@ -140,6 +140,21 @@ PRIMITIVES: dict[str, PrimitiveDefinition] = {
             "internal_network_name",
         ),
     ),
+    "runtime_chat": PrimitiveDefinition(
+        "runtime_chat",
+        "runtime",
+        "Run a single-turn OpenClaw chat in a runtime container.",
+        "runtime/commands/runtime/chat-runtime.py",
+        False,
+        (
+            "target",
+            "container_names",
+            "message",
+            "timeout_seconds",
+            "runtime_root",
+            "session_id",
+        ),
+    ),
     "snapshot_target": PrimitiveDefinition(
         "snapshot_target",
         "snapshot",

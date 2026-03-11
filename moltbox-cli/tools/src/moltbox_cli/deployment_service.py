@@ -440,6 +440,7 @@ def runtime_chat(config: AppConfig, env: str, message: str | None, timeout_secon
             timeout_seconds=timeout_seconds,
         )
     record = get_target(config, env)
+    runtime_root = Path(record.runtime_root) if record.runtime_root else None
     result = run_primitive(
         config,
         "runtime_chat",
@@ -448,6 +449,7 @@ def runtime_chat(config: AppConfig, env: str, message: str | None, timeout_secon
             "container_names": record.container_names,
             "message": message.strip(),
             "timeout_seconds": timeout_seconds,
+            "runtime_root": str(runtime_root) if runtime_root is not None else "",
         },
     )
     details = result.get("details") or {}

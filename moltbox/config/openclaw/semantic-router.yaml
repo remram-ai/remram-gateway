@@ -1,0 +1,31 @@
+semantic_router:
+  requester_defaults:
+    user_id: local_user
+    role: owner
+    auth_level: trusted
+    device: cli
+
+  guardrails:
+    max_escalation_depth: 2
+    force_answer_at_max_depth: true
+    allow_spawn_agent: true
+    stage_timeout_ms: 30000
+    request_budget_cap: 50000
+
+  stages:
+    - id: local
+      runtime_key: local_routing
+      prompt_profile: local
+      allowed_next:
+        - reasoning
+
+    - id: reasoning
+      runtime_key: cloud_reasoning
+      prompt_profile: reasoning
+      allowed_next:
+        - thinking
+
+    - id: thinking
+      runtime_key: deep_thinking
+      prompt_profile: thinking
+      allow_spawn_agent: true

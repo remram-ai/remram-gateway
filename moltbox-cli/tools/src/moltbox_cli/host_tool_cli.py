@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from datetime import datetime
 import shutil
 import subprocess
 import sys
@@ -12,7 +13,7 @@ from typing import Any, Callable
 
 from .deployment_assets import render_target
 from .jsonio import emit_json, read_json_file, write_json_file
-from .operation_ids import utc_now_iso
+from .operation_ids import new_operation_id, utc_now_iso
 from .runtime_config import seed_runtime_root_config
 
 
@@ -41,6 +42,16 @@ def _docker_available() -> bool:
 
 def _run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, capture_output=True, text=True, check=False)
+
+
+def _parse_json_output(text: str) -> Any:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
 
 
 def _container_inspect(container_name: str) -> dict[str, Any] | None:
@@ -378,6 +389,97 @@ def _restart_runtime(payload: dict[str, Any]) -> dict[str, Any]:
     return _compose_lifecycle("restart_runtime", payload, ["restart"])
 
 
+def _read_semantic_router_debug(runtime_root: Path | None, session_id: str) -> dict[str, Any] | None:
+    if runtime_root is None:
+        return None
+    debug_file = runtime_root / "semantic-router-debug" / f"{session_id}.json"
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if debug_file.exists():
+            payload = read_json_file(debug_file, default={}) or {}
+            return payload if isinstance(payload, dict) else None
+        time.sleep(0.1)
+    return None
+
+
+def _parse_iso_timestamp(value: str) -> datetime | None:
+    try:
+        normalized = value.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+
+def _artifact_matches_message(payload: dict[str, Any], message: str) -> bool:
+    prompt = str(payload.get("prompt") or "")
+    if message and message in prompt:
+        return True
+    packet = payload.get("packet")
+    if isinstance(packet, dict):
+        request = packet.get("request")
+        if isinstance(request, dict) and message and message in str(request.get("text") or ""):
+            return True
+    return False
+
+
+def _find_semantic_router_debug(
+    runtime_root: Path | None,
+    *,
+    session_ids: list[str],
+    message: str,
+    started_at: datetime,
+) -> tuple[dict[str, Any] | None, str | None]:
+    if runtime_root is None:
+        return None, None
+    debug_dir = runtime_root / "semantic-router-debug"
+    if not debug_dir.exists():
+        return None, None
+
+    candidates: list[Path] = []
+    for session_id in session_ids:
+        normalized = session_id.strip()
+        if not normalized:
+            continue
+        candidates.extend(sorted(debug_dir.glob(f"{normalized}__*.json")))
+    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+
+    for candidate in candidates:
+        payload = read_json_file(candidate, default={}) or {}
+        if not isinstance(payload, dict):
+            continue
+        written_at = _parse_iso_timestamp(str(payload.get("written_at") or ""))
+        if written_at is not None and written_at < started_at:
+            continue
+        if not _artifact_matches_message(payload, message):
+            continue
+        return payload, str(candidate)
+    return None, None
+
+
+def _extract_nested_value(payload: Any, path: tuple[str, ...]) -> Any:
+    current = payload
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _actual_agent_session_id(parsed_output: Any) -> str | None:
+    candidate_paths = (
+        ("result", "meta", "agentMeta", "sessionId"),
+        ("meta", "agentMeta", "sessionId"),
+        ("result", "sessionId"),
+        ("sessionId",),
+        ("session_id",),
+    )
+    for path in candidate_paths:
+        value = _extract_nested_value(parsed_output, path)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def _runtime_chat(payload: dict[str, Any]) -> dict[str, Any]:
     if not _docker_available():
         return _result("runtime_chat", False, errors=["docker_not_available"])
@@ -388,43 +490,98 @@ def _runtime_chat(payload: dict[str, Any]) -> dict[str, Any]:
     if not message:
         return _result("runtime_chat", False, errors=["message_required"])
     timeout_seconds = max(int(payload.get("timeout_seconds", 30)), 1)
+    runtime_root = Path(str(payload["runtime_root"])) if payload.get("runtime_root") else None
+    session_id = str(payload.get("session_id") or new_operation_id("runtime_chat")).strip()
+    started_at = datetime.now().astimezone()
     command = [
         "docker",
         "exec",
         container_names[0],
-        "/usr/local/bin/openclaw",
-        "--json",
+        "openclaw",
         "agent",
+        "--agent",
+        "main",
+        "--session-id",
+        session_id,
         "--message",
         message,
         "--timeout",
         str(timeout_seconds),
+        "--json",
     ]
     completed = _run_command(command)
     stdout = completed.stdout.strip()
-    parsed_output: dict[str, Any] | None = None
-    if stdout:
-        try:
-            parsed = json.loads(stdout)
-        except json.JSONDecodeError:
-            parsed = None
-        if isinstance(parsed, dict):
-            parsed_output = parsed
-    ok = completed.returncode == 0
+    stderr = completed.stderr.strip()
+    parsed_output = _parse_json_output(stdout)
+    actual_session_id = _actual_agent_session_id(parsed_output) or session_id
+    semantic_router_debug = _read_semantic_router_debug(runtime_root, session_id)
+    debug_artifact_path = (
+        str(runtime_root / "semantic-router-debug" / f"{session_id}.json")
+        if semantic_router_debug is not None and runtime_root is not None
+        else None
+    )
+    debug_session_id = session_id
+    if semantic_router_debug is None and actual_session_id != session_id:
+        semantic_router_debug = _read_semantic_router_debug(runtime_root, actual_session_id)
+        if semantic_router_debug is not None:
+            debug_session_id = actual_session_id
+            debug_artifact_path = (
+                str(runtime_root / "semantic-router-debug" / f"{actual_session_id}.json")
+                if runtime_root is not None
+                else None
+            )
+    if semantic_router_debug is None or not _artifact_matches_message(semantic_router_debug, message):
+        matched_payload, matched_path = _find_semantic_router_debug(
+            runtime_root,
+            session_ids=[session_id, actual_session_id],
+            message=message,
+            started_at=started_at,
+        )
+        if matched_payload is not None:
+            semantic_router_debug = matched_payload
+            debug_artifact_path = matched_path
+            if matched_path:
+                debug_session_id = Path(matched_path).name.split("__", 1)[0].removesuffix(".json")
+    packet = (
+        semantic_router_debug.get("packet")
+        if isinstance(semantic_router_debug, dict) and isinstance(semantic_router_debug.get("packet"), dict)
+        else {}
+    )
+    telemetry = (
+        semantic_router_debug.get("telemetry")
+        if isinstance(semantic_router_debug, dict) and isinstance(semantic_router_debug.get("telemetry"), dict)
+        else {}
+    )
+    response = packet.get("response") if isinstance(packet, dict) else {}
+    ok = completed.returncode == 0 and (
+        str((response or {}).get("status") or "") in {"answer", "spawn_agent"} or parsed_output is not None
+    )
     errors: list[str] = []
     if not ok:
-        errors.append(completed.stderr.strip() or stdout or "runtime_chat_failed")
+        errors.append(str((response or {}).get("error") or stderr or stdout or "runtime_chat_failed"))
     return _result(
         "runtime_chat",
         ok,
         details={
             "container_name": container_names[0],
             "message": message,
+            "session_id": session_id,
+            "actual_session_id": actual_session_id,
+            "debug_session_id": debug_session_id if semantic_router_debug is not None else None,
+            "debug_artifact_path": debug_artifact_path,
             "timeout_seconds": timeout_seconds,
             "openclaw_command": command,
             "cli_stdout": stdout,
-            "cli_stderr": completed.stderr.strip(),
+            "cli_stderr": stderr,
             "cli_output": parsed_output,
+            "telemetry": telemetry,
+            "semantic_router": {
+                "packet": packet,
+                "telemetry": telemetry,
+                "stage_count": len((telemetry.get("stages") or []) if isinstance(telemetry, dict) else []),
+                "stages": semantic_router_debug.get("stages") if isinstance(semantic_router_debug, dict) else [],
+                "debug_artifact": semantic_router_debug,
+            },
         },
         errors=errors,
     )
