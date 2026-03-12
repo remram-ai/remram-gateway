@@ -49,8 +49,21 @@ def _git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str
     return subprocess.run(["git", *args], cwd=str(cwd) if cwd else None, capture_output=True, text=True, check=False)
 
 
-def _mark_safe_directory(checkout_dir: Path) -> None:
-    _git("config", "--global", "--add", "safe.directory", str(checkout_dir))
+def _mark_safe_directory(path: Path) -> None:
+    candidates = [path]
+    git_dir = path / ".git"
+    if git_dir.exists():
+        candidates.append(git_dir)
+    for candidate in candidates:
+        _git("config", "--global", "--add", "safe.directory", str(candidate))
+
+
+def _mark_safe_source_url(url: str) -> None:
+    if "://" in url:
+        return
+    candidate = Path(url).expanduser()
+    if candidate.exists():
+        _mark_safe_directory(candidate.resolve())
 
 
 def _require_repo_url(name: str, url: str | None) -> str:
@@ -109,6 +122,7 @@ def _checkout_lock(
 
 def _ensure_checkout(config: GatewayConfig, name: str, url: str | None) -> RepoCheckout:
     resolved_url = _require_repo_url(name, url)
+    _mark_safe_source_url(resolved_url)
     checkout_dir = config.layout.repos_root / name
     with _checkout_lock(checkout_dir):
         if not checkout_dir.exists():

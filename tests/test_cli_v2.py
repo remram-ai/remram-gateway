@@ -124,6 +124,7 @@ def test_services_repo_checkout_marks_cached_repo_as_safe_directory(tmp_path: Pa
     _ = repo_adapters.list_services(config)
 
     assert ("config", "--global", "--add", "safe.directory", str(checkout_dir)) in commands
+    assert ("config", "--global", "--add", "safe.directory", str(services_repo)) in commands
 
 
 def test_runtime_config_sync_reads_external_runtime_repository(tmp_path: Path, monkeypatch) -> None:
