@@ -530,6 +530,42 @@ def test_validate_containers_fails_when_health_never_becomes_ready(monkeypatch) 
     assert payload["errors"] == ["openclaw-dev"]
 
 
+def test_resolve_openclaw_container_prefers_environment_runtime_over_legacy(monkeypatch) -> None:
+    from moltbox_runtime import skills as runtime_skills
+
+    existing = {"openclaw-dev", "moltbox-openclaw"}
+    monkeypatch.setattr(runtime_skills, "_container_exists", lambda container_name: container_name in existing)
+
+    assert runtime_skills.resolve_openclaw_container() == "openclaw-dev"
+
+
+def test_resolve_gateway_port_prefers_container_command_port(monkeypatch) -> None:
+    from moltbox_runtime import skills as runtime_skills
+
+    inspected = [
+        {
+            "Config": {
+                "Cmd": [
+                    "sh",
+                    "-lc",
+                    "exec node dist/index.js gateway --bind lan --port 18789",
+                    "--port",
+                    "18789",
+                ]
+            }
+        }
+    ]
+
+    class Completed:
+        returncode = 0
+        stdout = json.dumps(inspected)
+        stderr = ""
+
+    monkeypatch.setattr(runtime_skills, "_docker", lambda *args, input_text=None: Completed())
+
+    assert runtime_skills._resolve_gateway_port("openclaw-dev") == 18789
+
+
 def test_service_deploy_opensearch_uses_external_runtime_config(tmp_path: Path, monkeypatch) -> None:
     services_repo = create_git_repo(
         tmp_path / "moltbox-services",

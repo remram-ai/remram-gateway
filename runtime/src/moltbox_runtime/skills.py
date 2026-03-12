@@ -5,7 +5,6 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 from moltbox_commands.core.config import GatewayConfig
 from moltbox_commands.core.errors import ConfigError, ValidationError
@@ -13,6 +12,8 @@ from moltbox_commands.core.errors import ConfigError, ValidationError
 
 OPENCLAW_CONTAINER_CANDIDATES = (
     "openclaw-prod",
+    "openclaw-dev",
+    "openclaw-test",
     "moltbox-openclaw",
     "openclaw",
 )
@@ -134,15 +135,28 @@ def _write_container_json(container_name: str, path: str, payload: dict[str, Any
     )
 
 
-def _resolve_gateway_port(runtime_config: dict[str, Any]) -> int:
-    allowed_origins = (((runtime_config.get("gateway") or {}).get("controlUi") or {}).get("allowedOrigins") or [])
-    if isinstance(allowed_origins, list):
-        for item in allowed_origins:
-            if not isinstance(item, str):
-                continue
-            parsed = urlparse(item)
-            if parsed.hostname in {"127.0.0.1", "localhost"} and parsed.port:
-                return int(parsed.port)
+def _resolve_gateway_port(container_name: str) -> int:
+    inspected = _docker("inspect", container_name)
+    if inspected.returncode == 0:
+        try:
+            payload = json.loads(inspected.stdout)
+        except json.JSONDecodeError:
+            payload = []
+        if isinstance(payload, list) and payload:
+            config = payload[0].get("Config") or {}
+            command = config.get("Cmd") or []
+            if isinstance(command, list):
+                for index, token in enumerate(command):
+                    if token == "--port" and index + 1 < len(command):
+                        try:
+                            return int(command[index + 1])
+                        except (TypeError, ValueError):
+                            break
+                    if isinstance(token, str) and token.startswith("--port="):
+                        try:
+                            return int(token.split("=", 1)[1])
+                        except ValueError:
+                            break
     return 18789
 
 
@@ -331,7 +345,7 @@ def deploy_plugin_backed_skill(config: GatewayConfig, *, skill_name: str, packag
     if sanitized_runtime_config != runtime_config:
         _write_container_json(container_name, runtime_config_path, sanitized_runtime_config)
         runtime_config = sanitized_runtime_config
-    gateway_port = _resolve_gateway_port(runtime_config)
+    gateway_port = _resolve_gateway_port(container_name)
     staged_package_dir = _copy_package_to_container(container_name, package_dir, "/home/node/.openclaw/extensions")
 
     install_completed = _docker_exec(container_name, f"openclaw plugins install -l {staged_package_dir}")
