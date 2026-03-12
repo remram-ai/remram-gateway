@@ -84,6 +84,22 @@ def _schedule_gateway_self_update(config: Any, *, version: str | None, commit: s
             "repair Docker networking on the host and rerun `moltbox gateway update`",
             network_bootstrap=network_bootstrap.get("details"),
         )
+    current_container = os.environ.get("HOSTNAME", "").strip() or "gateway"
+    inspected = subprocess.run(
+        ["docker", "inspect", current_container, "--format", "{{.Config.Image}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    current_image = inspected.stdout.strip()
+    if inspected.returncode != 0 or not current_image:
+        raise ConfigError(
+            "failed to resolve the running gateway image for self-update",
+            "inspect the gateway container on the host and rerun `moltbox gateway update`",
+            docker_stdout=inspected.stdout.strip(),
+            docker_stderr=inspected.stderr.strip(),
+            current_container=current_container,
+        )
     helper_name = f"gateway-update-{int(time.time())}"
     command = [
         "docker",
@@ -96,7 +112,7 @@ def _schedule_gateway_self_update(config: Any, *, version: str | None, commit: s
         "/var/run/docker.sock:/var/run/docker.sock",
         "-v",
         f"{config.state_root}:{config.state_root}",
-        "docker:29-cli",
+        current_image,
         "compose",
         "-f",
         str(prepared.rendered.compose_file),

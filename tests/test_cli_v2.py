@@ -523,14 +523,20 @@ def test_gateway_update_inside_container_uses_detached_helper(monkeypatch, tmp_p
     )
 
     class Completed:
-        returncode = 0
-        stdout = "helper-123\n"
-        stderr = ""
+        def __init__(self, *, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
 
-    captured: dict[str, object] = {}
+    captured: dict[str, object] = {"commands": []}
+
     def fake_subprocess_run(command, capture_output, text, check):
-        captured["command"] = command
-        return Completed()
+        commands = captured["commands"]
+        assert isinstance(commands, list)
+        commands.append(command)
+        if command[:3] == ["docker", "inspect", "gateway"]:
+            return Completed(stdout="moltbox-gateway:main\n")
+        return Completed(stdout="helper-123\n")
 
     monkeypatch.setattr(gateway_commands.subprocess, "run", fake_subprocess_run)
 
@@ -538,8 +544,12 @@ def test_gateway_update_inside_container_uses_detached_helper(monkeypatch, tmp_p
 
     assert payload["ok"] is True
     assert payload["update_mode"] == "detached_self_update"
-    assert "docker" in str(captured["command"][0])
-    assert "--build" in captured["command"]
+    commands = captured["commands"]
+    assert isinstance(commands, list)
+    assert commands[0][:3] == ["docker", "inspect", "gateway"]
+    assert commands[1][0] == "docker"
+    assert "moltbox-gateway:main" in commands[1]
+    assert "--build" in commands[1]
     assert payload["artifact"]["selected_artifact"] == "abc123"
 
 
