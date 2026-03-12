@@ -268,3 +268,24 @@ def load_skill_recipe(config: GatewayConfig, skill_name: str) -> tuple[RepoResou
         "create a deployment recipe in remram-skills and rerun the command",
         skill=skill_name,
     )
+
+
+def skill_package_resource(config: GatewayConfig, skill_name: str) -> RepoResource:
+    checkout = skills_checkout(config)
+    candidates = [
+        checkout.checkout_dir / "skills" / skill_name,
+        checkout.checkout_dir / skill_name,
+    ]
+    markers = ("SKILL.md", "openclaw.plugin.json", "package.json")
+    for path in candidates:
+        if path.exists() and path.is_dir() and any((path / marker).exists() for marker in markers):
+            return RepoResource(
+                checkout=checkout,
+                path=path,
+                relative_path=str(path.relative_to(checkout.checkout_dir)).replace("\\", "/"),
+            )
+    raise ValidationError(
+        f"skill package '{skill_name}' was not found in remram-skills",
+        "create the skill package under remram-skills/skills/ or choose a different skill",
+        skill=skill_name,
+    )

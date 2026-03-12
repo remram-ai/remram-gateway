@@ -191,6 +191,41 @@ def test_skill_deploy_uses_skill_recipe_plan(tmp_path: Path, monkeypatch) -> Non
     ]
 
 
+def test_skill_deploy_plugin_backed_package_uses_runtime_installer(tmp_path: Path, monkeypatch) -> None:
+    skills_repo = create_git_repo(
+        tmp_path / "remram-skills",
+        {
+            "skills/semantic-router/SKILL.md": "# Semantic Router\n",
+            "skills/semantic-router/openclaw.plugin.json": json.dumps({"id": "semantic-router", "skills": ["./"]}, indent=2) + "\n",
+            "skills/semantic-router/example-config.json": json.dumps({"plugins": {"allow": ["semantic-router"]}}, indent=2) + "\n",
+        },
+    )
+    monkeypatch.setenv("MOLTBOX_STATE_ROOT", str(tmp_path / ".remram"))
+    monkeypatch.setenv("MOLTBOX_RUNTIME_ROOT", str(tmp_path / "Moltbox"))
+    monkeypatch.setenv("MOLTBOX_SKILLS_REPO_URL", str(skills_repo))
+    monkeypatch.setenv("MOLTBOX_REPO_ROOT", str(Path(__file__).resolve().parents[1]))
+
+    from moltbox_commands import skill as skill_commands
+
+    captured: dict[str, object] = {}
+
+    def fake_plugin_install(config, *, skill_name: str, package_dir: Path):
+        captured["skill_name"] = skill_name
+        captured["package_dir"] = package_dir
+        return {"install_mode": "plugin-backed", "plugin_id": "semantic-router"}
+
+    monkeypatch.setattr(skill_commands.runtime_skill_operations, "deploy_plugin_backed_skill", fake_plugin_install)
+    monkeypatch.setattr(skill_commands.runtime_skill_operations, "deploy_pure_skill", lambda *args, **kwargs: {"install_mode": "pure-skill"})
+
+    payload = execute(["skill", "deploy", "semantic-router"])
+
+    assert payload["ok"] is True
+    assert payload["skill_package"]["relative_path"] == "skills/semantic-router"
+    assert payload["install_result"]["install_mode"] == "plugin-backed"
+    assert captured["skill_name"] == "semantic-router"
+    assert Path(str(captured["package_dir"])).name == "semantic-router"
+
+
 def test_service_deploy_gateway_uses_clean_service_pipeline(tmp_path: Path, monkeypatch) -> None:
     services_repo = create_git_repo(
         tmp_path / "moltbox-services",
