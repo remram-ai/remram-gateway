@@ -239,6 +239,38 @@ def _apply_plugin_config(runtime_config: dict[str, Any], *, plugin_id: str, over
     return merged
 
 
+def _sanitize_plugin_config(runtime_config: dict[str, Any], *, plugin_id: str) -> dict[str, Any]:
+    cleaned = json.loads(json.dumps(runtime_config))
+    plugins = cleaned.get("plugins")
+    if not isinstance(plugins, dict):
+        return cleaned
+
+    allow = plugins.get("allow")
+    if isinstance(allow, list):
+        plugins["allow"] = [item for item in allow if item != plugin_id]
+
+    entries = plugins.get("entries")
+    if isinstance(entries, dict):
+        entries.pop(plugin_id, None)
+
+    installs = plugins.get("installs")
+    if isinstance(installs, dict):
+        installs.pop(plugin_id, None)
+
+    load = plugins.get("load")
+    if isinstance(load, dict):
+        paths = load.get("paths")
+        if isinstance(paths, list):
+            filtered = [item for item in paths if not (isinstance(item, str) and plugin_id in item)]
+            if filtered:
+                load["paths"] = filtered
+            else:
+                load.pop("paths", None)
+        if not load:
+            plugins.pop("load", None)
+    return cleaned
+
+
 def _restart_container(container_name: str) -> dict[str, Any]:
     completed = _docker("restart", container_name)
     _ensure_success(
@@ -283,6 +315,10 @@ def deploy_plugin_backed_skill(config: GatewayConfig, *, skill_name: str, packag
     plugin_id = _plugin_id(manifest, package_dir)
     runtime_config_path = "/home/node/.openclaw/openclaw.json"
     runtime_config = _read_container_json(container_name, runtime_config_path)
+    sanitized_runtime_config = _sanitize_plugin_config(runtime_config, plugin_id=plugin_id)
+    if sanitized_runtime_config != runtime_config:
+        _write_container_json(container_name, runtime_config_path, sanitized_runtime_config)
+        runtime_config = sanitized_runtime_config
     gateway_port = _resolve_gateway_port(runtime_config)
     staged_package_dir = _copy_package_to_container(container_name, package_dir, "/home/node/.openclaw/extensions")
 
