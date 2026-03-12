@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import socket
 import shutil
 from dataclasses import dataclass
@@ -14,6 +13,11 @@ from moltbox_commands.core.config import GatewayConfig
 from moltbox_commands.core.errors import ValidationError
 from moltbox_commands.core.jsonio import write_json
 from moltbox_repos.adapters import RepoResource, runtime_resource
+from moltbox_runtime.template_context import (
+    component_gateway_port,
+    component_profile,
+    runtime_template_context,
+)
 
 
 @dataclass(frozen=True)
@@ -140,38 +144,10 @@ def _copy_tree(service_dir: Path, output_dir: Path, context: dict[str, str], *, 
     return source_paths
 
 
-def _public_hostname() -> str:
-    configured = os.environ.get("MOLTBOX_PUBLIC_HOSTNAME") or os.environ.get("REMRAM_PUBLIC_HOSTNAME")
-    if configured and configured.strip():
-        return configured.strip()
-    detected = socket.gethostname().strip()
-    if not detected:
-        return ""
-    return detected.split(".", 1)[0]
-
-
 def _public_host_suffix(subdomain: str, hostname: str) -> str:
     if not hostname:
         return ""
     return f", {subdomain}.{hostname}"
-
-
-def _component_gateway_port(component_name: str, default_port: int) -> int:
-    return {
-        "openclaw-dev": 18790,
-        "openclaw-test": 28789,
-        "openclaw-prod": 38789,
-    }.get(component_name, default_port)
-
-
-def _component_profile(component_name: str) -> str:
-    if component_name.endswith("-dev"):
-        return "dev"
-    if component_name.endswith("-test"):
-        return "test"
-    if component_name.endswith("-prod"):
-        return "prod"
-    return component_name
 
 
 def _service_runtime_source(config: GatewayConfig, spec: ComponentSpec, *, required: bool) -> RepoResource | None:
@@ -222,11 +198,12 @@ def render_service(
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    public_hostname = _public_hostname()
+    runtime_context = runtime_template_context(config, spec)
+    public_hostname = runtime_context.get("public_hostname") or socket.gethostname().strip().split(".", 1)[0]
     context = {
         "service_name": spec.canonical_name,
         "component_name": spec.canonical_name,
-        "profile": _component_profile(spec.canonical_name),
+        "profile": component_profile(spec.canonical_name),
         "container_name": container_names[0],
         "compose_project": compose_project,
         "state_root": str(config.state_root),
@@ -238,7 +215,7 @@ def render_service(
         "internal_network_name": "moltbox_moltbox_internal",
         "internal_host": config.internal_host,
         "internal_port": str(config.internal_port),
-        "gateway_port": str(_component_gateway_port(spec.canonical_name, config.internal_port)),
+        "gateway_port": str(component_gateway_port(spec.canonical_name, config.internal_port)),
         "gateway_container_name": "gateway",
         "gateway_container_port": str(config.internal_port),
         "public_hostname": public_hostname,
@@ -251,6 +228,7 @@ def render_service(
         "artifact_channel": str(artifact.get("channel") or ""),
         "artifact_strategy": str(artifact.get("strategy") or ""),
         "service_source_path": str(source.path),
+        **runtime_context,
         **_string_dict(metadata.get("template_context")),
     }
     source_paths = _copy_tree(source.path, output_dir, context, skipped_names={"service.yaml", "service.yml"})

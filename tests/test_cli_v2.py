@@ -405,6 +405,12 @@ def test_service_deploy_runtime_mounts_rendered_config_and_prepares_state_root(t
         tmp_path / "moltbox-runtime",
         {
             "openclaw-dev/openclaw.json.template": json.dumps({"gateway": {"controlUi": {"allowedOrigins": []}}}, indent=2) + "\n",
+            "openclaw-dev/channels.yaml.template": (
+                "channels:\n"
+                "  discord:\n"
+                "    enabled: {{ discord_enabled }}\n"
+                "{{ discord_guilds_block }}\n"
+            ),
         },
     )
     monkeypatch.setenv("MOLTBOX_STATE_ROOT", str(tmp_path / ".remram"))
@@ -413,6 +419,8 @@ def test_service_deploy_runtime_mounts_rendered_config_and_prepares_state_root(t
     monkeypatch.setenv("MOLTBOX_RUNTIME_REPO_URL", str(runtime_repo))
     monkeypatch.setenv("MOLTBOX_PUBLIC_HOST_IP", "192.168.1.50")
     monkeypatch.setenv("MOLTBOX_DISCORD_ENABLED_DEV", "true")
+    monkeypatch.setenv("MOLTBOX_DISCORD_GUILD_ID_DEV", "1481179628323340393")
+    monkeypatch.setenv("MOLTBOX_DISCORD_CHANNEL_ID_DEV", "1481180067580219402")
     monkeypatch.setenv("MOLTBOX_REPO_ROOT", str(Path(__file__).resolve().parents[1]))
     config = resolve_config(Args())
     runtime_root = config.layout.runtime_component_dir("openclaw-dev")
@@ -433,6 +441,12 @@ def test_service_deploy_runtime_mounts_rendered_config_and_prepares_state_root(t
         assert "OPENCLAW_CONFIG_DIR: /app/config/openclaw" in compose_text
         assert "cp /app/config/openclaw/openclaw.json /home/node/.openclaw/openclaw.json" in compose_text
         assert (render_dir / "config" / "openclaw-dev" / "openclaw.json").exists()
+        channels_text = (render_dir / "config" / "openclaw-dev" / "channels.yaml").read_text(encoding="utf-8")
+        assert "enabled: true" in channels_text
+        assert '"1481179628323340393"' in channels_text
+        assert '"1481180067580219402"' in channels_text
+        assert "{{ discord_enabled }}" not in channels_text
+        assert "{{ discord_guilds_block }}" not in channels_text
         return {"ok": True}
 
     monkeypatch.setattr(service_pipeline.docker_engine, "pull_stack", fake_pull)
