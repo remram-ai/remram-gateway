@@ -99,11 +99,66 @@ func TestCLIForwardsToGateway(t *testing.T) {
 			},
 		},
 		{
+			name:       "gateway service restart",
+			args:       []string{"gateway", "service", "restart", "opensearch"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/service/restart",
+			wantCode:   cli.ExitOK,
+			handler: func(t *testing.T, writer http.ResponseWriter, request *http.Request) {
+				t.Helper()
+				var payload cli.RouteRequest
+				if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				if payload.Service != "opensearch" {
+					t.Fatalf("payload.service = %q, want opensearch", payload.Service)
+				}
+				_ = json.NewEncoder(writer).Encode(cli.ServiceActionResult{
+					OK:      true,
+					Route:   &cli.Route{Resource: "gateway", Kind: cli.KindGatewayService, Action: "restart", Subject: "opensearch"},
+					Service: "opensearch",
+					Action:  "restart",
+				})
+			},
+		},
+		{
+			name:       "gateway logs",
+			args:       []string{"gateway", "logs"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/logs",
+			wantCode:   cli.ExitOK,
+			handler: func(t *testing.T, writer http.ResponseWriter, request *http.Request) {
+				t.Helper()
+				_ = json.NewEncoder(writer).Encode(cli.CommandResult{
+					OK:            true,
+					Route:         &cli.Route{Resource: "gateway", Kind: cli.KindGateway, Action: "logs"},
+					ContainerName: "gateway",
+					ExitCode:      0,
+					Stdout:        "gateway log line",
+				})
+			},
+		},
+		{
+			name:       "gateway update",
+			args:       []string{"gateway", "update"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/update",
+			wantCode:   cli.ExitOK,
+			handler: func(t *testing.T, writer http.ResponseWriter, request *http.Request) {
+				t.Helper()
+				_ = json.NewEncoder(writer).Encode(cli.ServiceDeployResult{
+					OK:      true,
+					Route:   &cli.Route{Resource: "gateway", Kind: cli.KindGateway, Action: "update", Subject: "gateway"},
+					Service: "gateway",
+				})
+			},
+		},
+		{
 			name:       "runtime action",
 			args:       []string{"dev", "reload"},
 			wantMethod: http.MethodPost,
-			wantPath:   "/execute",
-			wantCode:   cli.ExitNotImplemented,
+			wantPath:   "/runtime/reload",
+			wantCode:   cli.ExitOK,
 			handler: func(t *testing.T, writer http.ResponseWriter, request *http.Request) {
 				t.Helper()
 				var payload cli.RouteRequest
@@ -113,11 +168,73 @@ func TestCLIForwardsToGateway(t *testing.T) {
 				if payload.Route == nil || payload.Route.Environment != "dev" {
 					t.Fatalf("payload.route = %#v, want dev runtime route", payload.Route)
 				}
+				_ = json.NewEncoder(writer).Encode(cli.ServiceActionResult{
+					OK:      true,
+					Route:   payload.Route,
+					Service: "openclaw-dev",
+					Action:  "reload",
+				})
+			},
+		},
+		{
+			name:       "runtime checkpoint",
+			args:       []string{"dev", "checkpoint"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/runtime/checkpoint",
+			wantCode:   cli.ExitNotImplemented,
+			handler: func(t *testing.T, writer http.ResponseWriter, request *http.Request) {
+				t.Helper()
+				var payload cli.RouteRequest
+				if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
 				_ = json.NewEncoder(writer).Encode(cli.NotImplemented(
 					payload.Route,
-					"dev reload is not implemented in phase 1",
-					"phase 2 will add runtime orchestration",
+					"dev checkpoint is not implemented yet",
+					"checkpoint orchestration lands after runtime deployment",
 				))
+			},
+		},
+		{
+			name:       "runtime openclaw passthrough",
+			args:       []string{"dev", "openclaw", "plugins", "list"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/runtime/openclaw",
+			wantCode:   cli.ExitOK,
+			handler: func(t *testing.T, writer http.ResponseWriter, request *http.Request) {
+				t.Helper()
+				var payload cli.RouteRequest
+				if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				_ = json.NewEncoder(writer).Encode(cli.CommandResult{
+					OK:            true,
+					Route:         payload.Route,
+					ContainerName: "openclaw-dev",
+					ExitCode:      0,
+					Stdout:        "plugin-a\nplugin-b\n",
+				})
+			},
+		},
+		{
+			name:       "service passthrough",
+			args:       []string{"ollama", "list"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/service/passthrough",
+			wantCode:   cli.ExitOK,
+			handler: func(t *testing.T, writer http.ResponseWriter, request *http.Request) {
+				t.Helper()
+				var payload cli.RouteRequest
+				if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				_ = json.NewEncoder(writer).Encode(cli.CommandResult{
+					OK:            true,
+					Route:         payload.Route,
+					ContainerName: "ollama",
+					ExitCode:      0,
+					Stdout:        "qwen3:8b\n",
+				})
 			},
 		},
 	}

@@ -39,6 +39,9 @@ type ContainerInfo struct {
 	State struct {
 		Status  string `json:"Status"`
 		Running bool   `json:"Running"`
+		Health  *struct {
+			Status string `json:"Status"`
+		} `json:"Health,omitempty"`
 	} `json:"State"`
 }
 

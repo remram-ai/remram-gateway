@@ -41,6 +41,20 @@ func (c *HTTPClient) Execute(route *cli.Route) ([]byte, error) {
 		return c.get("/service/status?" + query.Encode())
 	case route.Kind == cli.KindGatewayService && route.Action == "deploy":
 		return c.post("/service/deploy", cli.RouteRequest{Route: route, Service: route.Subject})
+	case route.Kind == cli.KindGatewayService && route.Action == "restart":
+		return c.post("/service/restart", cli.RouteRequest{Route: route, Service: route.Subject})
+	case route.Kind == cli.KindGateway && route.Action == "logs":
+		return c.get("/logs")
+	case route.Kind == cli.KindGateway && route.Action == "update":
+		return c.post("/update", cli.RouteRequest{Route: route, Service: "gateway"})
+	case route.Kind == cli.KindRuntimeAction && route.Action == "reload":
+		return c.post("/runtime/reload", cli.RouteRequest{Route: route})
+	case route.Kind == cli.KindRuntimeAction && route.Action == "checkpoint":
+		return c.post("/runtime/checkpoint", cli.RouteRequest{Route: route})
+	case route.Kind == cli.KindRuntimeNative:
+		return c.post("/runtime/openclaw", cli.RouteRequest{Route: route})
+	case route.Kind == cli.KindServiceNative:
+		return c.post("/service/passthrough", cli.RouteRequest{Route: route})
 	default:
 		return c.post("/execute", cli.RouteRequest{Route: route})
 	}

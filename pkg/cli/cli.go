@@ -111,13 +111,54 @@ type DockerRunResult struct {
 }
 
 type ServiceStatusResult struct {
-	OK            bool   `json:"ok"`
-	Route         *Route `json:"route"`
-	Service       string `json:"service"`
-	ContainerName string `json:"container_name"`
+	OK             bool                     `json:"ok"`
+	Route          *Route                   `json:"route"`
+	Service        string                   `json:"service"`
+	ComposeProject string                   `json:"compose_project,omitempty"`
+	ContainerName  string                   `json:"container_name,omitempty"`
+	Image          string                   `json:"image,omitempty"`
+	Status         string                   `json:"status,omitempty"`
+	Running        bool                     `json:"running"`
+	Containers     []ServiceContainerStatus `json:"containers,omitempty"`
+}
+
+type ServiceContainerStatus struct {
+	Name          string `json:"name"`
+	Present       bool   `json:"present"`
+	ContainerName string `json:"container_name,omitempty"`
 	Image         string `json:"image,omitempty"`
 	Status        string `json:"status,omitempty"`
 	Running       bool   `json:"running"`
+	Health        string `json:"health,omitempty"`
+}
+
+type ServiceDeployResult struct {
+	OK             bool                     `json:"ok"`
+	Route          *Route                   `json:"route"`
+	Service        string                   `json:"service"`
+	ComposeProject string                   `json:"compose_project,omitempty"`
+	OutputDir      string                   `json:"output_dir,omitempty"`
+	Command        []string                 `json:"command,omitempty"`
+	Containers     []ServiceContainerStatus `json:"containers,omitempty"`
+}
+
+type ServiceActionResult struct {
+	OK         bool                     `json:"ok"`
+	Route      *Route                   `json:"route"`
+	Service    string                   `json:"service"`
+	Action     string                   `json:"action"`
+	Command    []string                 `json:"command,omitempty"`
+	Containers []ServiceContainerStatus `json:"containers,omitempty"`
+}
+
+type CommandResult struct {
+	OK            bool     `json:"ok"`
+	Route         *Route   `json:"route"`
+	ContainerName string   `json:"container_name,omitempty"`
+	Command       []string `json:"command,omitempty"`
+	Stdout        string   `json:"stdout,omitempty"`
+	Stderr        string   `json:"stderr,omitempty"`
+	ExitCode      int      `json:"exit_code"`
 }
 
 type ParseResult struct {

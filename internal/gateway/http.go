@@ -3,13 +3,11 @@ package gateway
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/remram-ai/moltbox-gateway/internal/docker"
 	"github.com/remram-ai/moltbox-gateway/internal/runtime"
 	"github.com/remram-ai/moltbox-gateway/internal/services"
 	"github.com/remram-ai/moltbox-gateway/pkg/cli"
@@ -23,6 +21,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/docker/run", s.handleDockerRun)
 	mux.HandleFunc("/service/status", s.handleServiceStatus)
 	mux.HandleFunc("/service/deploy", s.handleServiceDeploy)
+	mux.HandleFunc("/service/restart", s.handleServiceRestart)
+	mux.HandleFunc("/service/passthrough", s.handleServicePassthrough)
+	mux.HandleFunc("/logs", s.handleGatewayLogs)
+	mux.HandleFunc("/update", s.handleGatewayUpdate)
+	mux.HandleFunc("/runtime/reload", s.handleRuntimeReload)
+	mux.HandleFunc("/runtime/checkpoint", s.handleRuntimeCheckpoint)
+	mux.HandleFunc("/runtime/openclaw", s.handleRuntimeOpenClaw)
 	mux.HandleFunc("/execute", s.handleExecute)
 	return mux
 }
@@ -150,35 +155,35 @@ func (s *Server) handleServiceStatus(writer http.ResponseWriter, request *http.R
 	ctx, cancel := context.WithTimeout(request.Context(), 5*time.Second)
 	defer cancel()
 
-	info, err := s.dockerClient.InspectContainer(ctx, service)
+	result, err := s.orchestrator.ServiceStatus(ctx, route, service)
 	if err != nil {
-		if errors.Is(err, docker.ErrContainerNotFound) {
-			s.writeJSON(writer, http.StatusNotFound, cli.Error(
-				route,
-				"service_not_found",
-				fmt.Sprintf("service container '%s' was not found", service),
-				"verify the service is deployed on the host Docker engine",
-			))
-			return
-		}
 		s.writeJSON(writer, http.StatusBadGateway, cli.Error(
 			route,
-			"docker_unavailable",
+			"service_status_failed",
 			fmt.Sprintf("failed to inspect service '%s'", service),
-			"verify the gateway container has Docker access",
+			err.Error(),
 		))
 		return
 	}
 
-	s.writeJSON(writer, http.StatusOK, cli.ServiceStatusResult{
-		OK:            true,
-		Route:         route,
-		Service:       service,
-		ContainerName: strings.TrimPrefix(info.Name, "/"),
-		Image:         info.Config.Image,
-		Status:        info.State.Status,
-		Running:       info.State.Running,
-	})
+	missing := true
+	for _, container := range result.Containers {
+		if container.Present {
+			missing = false
+			break
+		}
+	}
+	if missing {
+		s.writeJSON(writer, http.StatusNotFound, cli.Error(
+			route,
+			"service_not_found",
+			fmt.Sprintf("service '%s' was not found", service),
+			"verify the service is deployed through the gateway",
+		))
+		return
+	}
+
+	s.writeJSON(writer, http.StatusOK, result)
 }
 
 func (s *Server) handleServiceDeploy(writer http.ResponseWriter, request *http.Request) {
@@ -206,7 +211,234 @@ func (s *Server) handleServiceDeploy(writer http.ResponseWriter, request *http.R
 		return
 	}
 
-	s.writeJSON(writer, http.StatusNotImplemented, Payload(route))
+	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Minute)
+	defer cancel()
+
+	result, err := s.orchestrator.DeployService(ctx, route, route.Subject)
+	if err != nil {
+		s.writeJSON(writer, http.StatusBadGateway, cli.Error(
+			route,
+			"service_deploy_failed",
+			fmt.Sprintf("failed to deploy service '%s'", route.Subject),
+			err.Error(),
+		))
+		return
+	}
+
+	s.writeJSON(writer, http.StatusOK, result)
+}
+
+func (s *Server) handleServiceRestart(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		s.writeJSON(writer, http.StatusMethodNotAllowed, cli.Error(nil, "parse_error", "method not allowed", "use POST /service/restart"))
+		return
+	}
+
+	route, ok := s.parseServiceRouteRequest(writer, request, "restart")
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(request.Context(), 45*time.Second)
+	defer cancel()
+
+	result, err := s.orchestrator.RestartService(ctx, route, route.Subject)
+	if err != nil {
+		s.writeJSON(writer, http.StatusBadGateway, cli.Error(
+			route,
+			"service_restart_failed",
+			fmt.Sprintf("failed to restart service '%s'", route.Subject),
+			err.Error(),
+		))
+		return
+	}
+
+	s.writeJSON(writer, http.StatusOK, result)
+}
+
+func (s *Server) handleServicePassthrough(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		s.writeJSON(writer, http.StatusMethodNotAllowed, cli.Error(nil, "parse_error", "method not allowed", "use POST /service/passthrough"))
+		return
+	}
+
+	payload, ok := s.parseRouteRequest(writer, request, "send JSON with the parsed service route")
+	if !ok {
+		return
+	}
+	if payload.Route == nil || payload.Route.Kind != cli.KindServiceNative {
+		s.writeJSON(writer, http.StatusBadRequest, cli.Error(payload.Route, "parse_error", "missing service passthrough route", "use a documented service passthrough command"))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Minute)
+	defer cancel()
+
+	result, err := s.orchestrator.ServicePassthrough(ctx, payload.Route)
+	if err != nil {
+		s.writeJSON(writer, http.StatusBadGateway, cli.Error(
+			payload.Route,
+			"service_passthrough_failed",
+			fmt.Sprintf("failed to execute %s passthrough", payload.Route.Resource),
+			err.Error(),
+		))
+		return
+	}
+	if !result.OK {
+		s.writeJSON(writer, http.StatusBadGateway, cli.Error(
+			payload.Route,
+			"service_passthrough_failed",
+			fmt.Sprintf("%s passthrough command failed", payload.Route.Resource),
+			result.Stdout,
+		))
+		return
+	}
+
+	s.writeJSON(writer, http.StatusOK, result)
+}
+
+func (s *Server) handleGatewayLogs(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		s.writeJSON(writer, http.StatusMethodNotAllowed, cli.Error(nil, "parse_error", "method not allowed", "use GET /logs"))
+		return
+	}
+
+	route := &cli.Route{Resource: "gateway", Kind: cli.KindGateway, Action: "logs"}
+	ctx, cancel := context.WithTimeout(request.Context(), 30*time.Second)
+	defer cancel()
+
+	result, err := s.orchestrator.GatewayLogs(ctx, route)
+	if err != nil {
+		s.writeJSON(writer, http.StatusBadGateway, cli.Error(
+			route,
+			"gateway_logs_failed",
+			"failed to read gateway logs",
+			err.Error(),
+		))
+		return
+	}
+	if !result.OK {
+		s.writeJSON(writer, http.StatusBadGateway, cli.Error(
+			route,
+			"gateway_logs_failed",
+			"failed to read gateway logs",
+			result.Stdout,
+		))
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, result)
+}
+
+func (s *Server) handleGatewayUpdate(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		s.writeJSON(writer, http.StatusMethodNotAllowed, cli.Error(nil, "parse_error", "method not allowed", "use POST /update"))
+		return
+	}
+
+	route := &cli.Route{Resource: "gateway", Kind: cli.KindGateway, Action: "update", Subject: "gateway"}
+	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Minute)
+	defer cancel()
+
+	result, err := s.orchestrator.DeployService(ctx, route, "gateway")
+	if err != nil {
+		s.writeJSON(writer, http.StatusBadGateway, cli.Error(
+			route,
+			"gateway_update_failed",
+			"failed to deploy gateway service",
+			err.Error(),
+		))
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, result)
+}
+
+func (s *Server) handleRuntimeReload(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		s.writeJSON(writer, http.StatusMethodNotAllowed, cli.Error(nil, "parse_error", "method not allowed", "use POST /runtime/reload"))
+		return
+	}
+
+	payload, ok := s.parseRouteRequest(writer, request, "send JSON with the parsed runtime route")
+	if !ok {
+		return
+	}
+	if payload.Route == nil || payload.Route.Kind != cli.KindRuntimeAction || payload.Route.Action != "reload" {
+		s.writeJSON(writer, http.StatusBadRequest, cli.Error(payload.Route, "parse_error", "missing runtime reload route", "use: dev|test|prod reload"))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Minute)
+	defer cancel()
+
+	result, err := s.orchestrator.RuntimeReload(ctx, payload.Route)
+	if err != nil {
+		s.writeJSON(writer, http.StatusBadGateway, cli.Error(
+			payload.Route,
+			"runtime_reload_failed",
+			fmt.Sprintf("failed to reload runtime '%s'", payload.Route.Runtime),
+			err.Error(),
+		))
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, result)
+}
+
+func (s *Server) handleRuntimeCheckpoint(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		s.writeJSON(writer, http.StatusMethodNotAllowed, cli.Error(nil, "parse_error", "method not allowed", "use POST /runtime/checkpoint"))
+		return
+	}
+
+	payload, ok := s.parseRouteRequest(writer, request, "send JSON with the parsed runtime route")
+	if !ok {
+		return
+	}
+	if payload.Route == nil {
+		s.writeJSON(writer, http.StatusBadRequest, cli.Error(nil, "parse_error", "missing route in checkpoint request", "send JSON with the parsed route"))
+		return
+	}
+
+	s.writeJSON(writer, http.StatusNotImplemented, runtime.Payload(payload.Route))
+}
+
+func (s *Server) handleRuntimeOpenClaw(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		s.writeJSON(writer, http.StatusMethodNotAllowed, cli.Error(nil, "parse_error", "method not allowed", "use POST /runtime/openclaw"))
+		return
+	}
+
+	payload, ok := s.parseRouteRequest(writer, request, "send JSON with the parsed runtime route")
+	if !ok {
+		return
+	}
+	if payload.Route == nil || payload.Route.Kind != cli.KindRuntimeNative {
+		s.writeJSON(writer, http.StatusBadRequest, cli.Error(payload.Route, "parse_error", "missing runtime openclaw route", "use: dev|test|prod openclaw <command>"))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Minute)
+	defer cancel()
+
+	result, err := s.orchestrator.RuntimeOpenClaw(ctx, payload.Route)
+	if err != nil {
+		s.writeJSON(writer, http.StatusBadGateway, cli.Error(
+			payload.Route,
+			"runtime_openclaw_failed",
+			fmt.Sprintf("failed to execute OpenClaw command in '%s'", payload.Route.Runtime),
+			err.Error(),
+		))
+		return
+	}
+	if !result.OK {
+		s.writeJSON(writer, http.StatusBadGateway, cli.Error(
+			payload.Route,
+			"runtime_openclaw_failed",
+			fmt.Sprintf("OpenClaw command failed in '%s'", payload.Route.Runtime),
+			result.Stdout,
+		))
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, result)
 }
 
 func (s *Server) handleExecute(writer http.ResponseWriter, request *http.Request) {
@@ -215,9 +447,8 @@ func (s *Server) handleExecute(writer http.ResponseWriter, request *http.Request
 		return
 	}
 
-	var payload cli.RouteRequest
-	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
-		s.writeJSON(writer, http.StatusBadRequest, cli.Error(nil, "parse_error", "invalid JSON request body", "send JSON with the parsed route"))
+	payload, ok := s.parseRouteRequest(writer, request, "send JSON with the parsed route")
+	if !ok {
 		return
 	}
 
@@ -245,4 +476,35 @@ func (s *Server) writeJSON(writer http.ResponseWriter, status int, payload any) 
 	writer.Header().Set("Content-Type", "application/json")
 	writer.WriteHeader(status)
 	_ = cli.WriteJSON(writer, payload)
+}
+
+func (s *Server) parseRouteRequest(writer http.ResponseWriter, request *http.Request, recovery string) (cli.RouteRequest, bool) {
+	var payload cli.RouteRequest
+	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		s.writeJSON(writer, http.StatusBadRequest, cli.Error(nil, "parse_error", "invalid JSON request body", recovery))
+		return cli.RouteRequest{}, false
+	}
+	return payload, true
+}
+
+func (s *Server) parseServiceRouteRequest(writer http.ResponseWriter, request *http.Request, action string) (*cli.Route, bool) {
+	payload, ok := s.parseRouteRequest(writer, request, "send JSON with the target service")
+	if !ok {
+		return nil, false
+	}
+
+	service := strings.TrimSpace(payload.Service)
+	route := &cli.Route{Resource: "gateway", Kind: cli.KindGatewayService, Action: action, Subject: service}
+	if payload.Route != nil {
+		route = payload.Route
+	}
+	if strings.TrimSpace(route.Subject) == "" {
+		route.Subject = service
+	}
+	if strings.TrimSpace(route.Subject) == "" {
+		s.writeJSON(writer, http.StatusBadRequest, cli.Error(route, "parse_error", "missing service name", fmt.Sprintf("use: gateway service %s <service>", action)))
+		return nil, false
+	}
+
+	return route, true
 }
