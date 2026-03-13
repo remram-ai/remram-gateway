@@ -1,0 +1,9 @@
+NETWORK ID     NAME                       DRIVER    SCOPE
+6e3fcf872baf   bridge                     bridge    local
+469d161c60cc   config_moltbox_internal    bridge    local
+a9c43c6c9cb0   host                       host      local
+da955681656a   moltbox-tools_default      bridge    local
+040b790445d6   moltbox_default            bridge    local
+4e96364bd9fd   moltbox_moltbox_internal   bridge    local
+0cc37cd3b510   none                       null      local
+b6462e51d539   remram-test_default        bridge    local

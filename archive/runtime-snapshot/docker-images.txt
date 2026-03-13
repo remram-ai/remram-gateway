@@ -1,0 +1,29 @@
+IMAGE                                                      ID             DISK USAGE   CONTENT SIZE   EXTRA
+alpine:3.20                                                a4f4213abb84       12.2MB         3.71MB        
+alpine:latest                                              25109184c71b       13.1MB         3.95MB        
+caddy:2                                                    261437d35b88         88MB         24.1MB        
+caddy:2.8.4                                                226d1f059b75       69.8MB         18.9MB   U    
+ghcr.io/openclaw/openclaw:latest                           f4f1e98439a9       3.82GB          988MB   U    
+jaegertracing/all-in-one:1.58                              f015fb34e674        112MB         34.5MB        
+moltbox-gateway:06f463f                                    2bebde4c8f5c        823MB          205MB        
+moltbox-gateway:2c82f9e9028005fc39d51c9d983167fc2896c69b   ed2001fb07d1        823MB          205MB        
+moltbox-gateway:38e6193                                    b99cd18e4000        823MB          205MB        
+moltbox-gateway:4398b55                                    3c0efeeb1f4b        823MB          205MB        
+moltbox-gateway:47387a6                                    982bdad4c7ad        823MB          205MB        
+moltbox-gateway:910f32e                                    0f539b94023d        823MB          205MB        
+moltbox-gateway:b35f522                                    23941d5eb1f8        823MB          205MB        
+moltbox-gateway:c2e5477                                    0f69f1e78b8e        823MB          205MB        
+moltbox-gateway:c73d8ec                                    7040e2305d5a        823MB          205MB        
+moltbox-gateway:cf3a474                                    6752ab45d72c        824MB          205MB        
+moltbox-gateway:d8228aa                                    1f68802b327c        824MB          205MB        
+moltbox-gateway:de94de7                                    009d6ee0f28a        824MB          205MB   U    
+moltbox-gateway:e12053b                                    4542a9148fcc        823MB          205MB        
+moltbox-ollama:local                                       de973be7d208        5.2GB         1.75GB   U    
+moltbox-opensearch:local                                   5dbc667aba1f       2.38GB          981MB   U    
+moltbox-tools:local                                        f9d4177fe5e0        539MB          145MB   U    
+nvidia/cuda:12.4.1-base-ubuntu22.04                        0f6bfcbf267e        348MB         91.8MB        
+ollama/ollama:0.6.4                                        476b956cbe76       5.23GB         1.77GB        
+ollama/ollama:0.6.8                                        50ab2378567a        5.2GB         1.75GB        
+ollama/ollama:latest                                       0ff452f6a4c3       9.04GB         3.36GB        
+openclaw:local                                             d24e528b0c78       4.45GB         1.16GB   U    
+opensearchproject/opensearch:2.18.0                        7f6fa1efee8f       2.38GB          981MB        

@@ -1,0 +1,11 @@
+DRIVER    VOLUME NAME
+local     90f7de6df95984bc99420e5e684ae048ee320ae8deabfedb8c6ab61c3999e7bd
+local     caddy_config
+local     caddy_data
+local     config_ollama_data
+local     config_opensearch_data
+local     moltbox-test_ollama_data
+local     moltbox-test_opensearch_data
+local     moltbox_ollama_data
+local     moltbox_opensearch_data
+local     opensearch_opensearch_data
