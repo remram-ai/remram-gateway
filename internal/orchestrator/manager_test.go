@@ -189,6 +189,7 @@ func TestRenderServiceAssetsSupportsEnvironmentAlias(t *testing.T) {
 			StateRoot:   stateRoot,
 			RuntimeRoot: filepath.Join(root, "runtime-state"),
 			LogsRoot:    filepath.Join(root, "logs"),
+			SecretsRoot: filepath.Join(root, "secrets"),
 		},
 		Repos: appconfig.ReposConfig{
 			Services: appconfig.RepoConfig{URL: servicesRoot},
@@ -366,7 +367,7 @@ func TestGatewayUpdateStartsHelperContainer(t *testing.T) {
 		t.Fatalf("expected network inspect/create + helper run, got %d commands", len(runner.commands))
 	}
 	got := strings.Join(runner.commands[2], " ")
-	if !strings.Contains(got, "run -d --rm") || !strings.Contains(got, "moltbox-gateway:latest") || !strings.Contains(got, "golang:1.23-bookworm") || !strings.Contains(got, "cp \"$STAGING_ROOT/moltbox\" \"$CLI_PATH\"") {
+	if !strings.Contains(got, "run -d --rm") || !strings.Contains(got, "moltbox-gateway:latest") || !strings.Contains(got, "golang:1.23-bookworm") || !strings.Contains(got, "/usr/local/go/bin/go build -buildvcs=false -o /out/moltbox") || !strings.Contains(got, "remote get-url origin") || !strings.Contains(got, "cp \"$STAGING_ROOT/moltbox\" \"$CLI_PATH\"") || !strings.Contains(got, "chown -R \"$CLI_OWNER\" \"$SECRETS_ROOT\"") {
 		t.Fatalf("gateway update helper command = %q", got)
 	}
 }

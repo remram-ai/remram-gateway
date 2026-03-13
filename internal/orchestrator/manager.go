@@ -143,7 +143,7 @@ func (m *Manager) GatewayUpdate(ctx context.Context, route *cli.Route) (cli.Serv
 
 	stagingRoot := filepath.Join(m.config.Paths.StateRoot, "updates", "gateway")
 	configSource := filepath.Join(outputDir, "config", "gateway", "config.yaml")
-	updateScript := buildGatewayUpdateScript(repoRoot, stagingRoot, cliPath, cliConfigPath, configSource, outputDir, definition.ComposeProject)
+	updateScript := buildGatewayUpdateScript(repoRoot, stagingRoot, cliPath, cliConfigPath, configSource, outputDir, definition.ComposeProject, m.config.Paths.SecretsRoot)
 	commandArgs := gatewayUpdateHelperCommand(m.config, repoRoot, cliPath, cliConfigPath, updateScript)
 
 	result, err := m.runner.Run(ctx, "", "docker", commandArgs...)
@@ -177,6 +177,7 @@ func gatewayUpdateHelperCommand(cfg config.Config, repoRoot, cliPath, cliConfigP
 	for _, mount := range uniqueMountRoots(
 		cfg.Paths.StateRoot,
 		cfg.Paths.LogsRoot,
+		cfg.Paths.SecretsRoot,
 		repoRoot,
 		filepath.Dir(cliPath),
 		filepath.Dir(cliConfigPath),
@@ -193,7 +194,7 @@ func gatewayUpdateHelperCommand(cfg config.Config, repoRoot, cliPath, cliConfigP
 	return commandArgs
 }
 
-func buildGatewayUpdateScript(repoRoot, stagingRoot, cliPath, cliConfigPath, configSource, gatewayOutputDir, composeProject string) string {
+func buildGatewayUpdateScript(repoRoot, stagingRoot, cliPath, cliConfigPath, configSource, gatewayOutputDir, composeProject, secretsRoot string) string {
 	return strings.Join([]string{
 		"set -eu",
 		fmt.Sprintf("REPO=%s", shellQuote(repoRoot)),
@@ -203,13 +204,20 @@ func buildGatewayUpdateScript(repoRoot, stagingRoot, cliPath, cliConfigPath, con
 		fmt.Sprintf("CONFIG_SOURCE=%s", shellQuote(configSource)),
 		fmt.Sprintf("GATEWAY_OUTPUT_DIR=%s", shellQuote(gatewayOutputDir)),
 		fmt.Sprintf("COMPOSE_PROJECT=%s", shellQuote(composeProject)),
+		fmt.Sprintf("SECRETS_ROOT=%s", shellQuote(secretsRoot)),
 		`mkdir -p "$STAGING_ROOT" "$(dirname "$CLI_PATH")" "$(dirname "$CLI_CONFIG_PATH")"`,
-		`if [ -d "$REPO/.git" ]; then git -C "$REPO" fetch --all --tags --prune && git -C "$REPO" pull --ff-only; fi`,
-		`docker run --rm -v "$REPO:/src" -v "$STAGING_ROOT:/out" -w /src golang:1.23-bookworm sh -lc 'go build -o /out/moltbox ./cmd/moltbox && go build -o /out/gateway ./cmd/gateway'`,
+		`mkdir -p "$SECRETS_ROOT"`,
+		`if [ -d "$REPO/.git" ] && git -C "$REPO" remote get-url origin >/dev/null 2>&1; then git -C "$REPO" fetch --all --tags --prune && git -C "$REPO" pull --ff-only; fi`,
+		`docker run --rm -v "$REPO:/src" -v "$STAGING_ROOT:/out" -w /src golang:1.23-bookworm sh -lc 'set -eu; /usr/local/go/bin/go build -buildvcs=false -o /out/moltbox ./cmd/moltbox && /usr/local/go/bin/go build -buildvcs=false -o /out/gateway ./cmd/gateway'`,
 		`cp "$STAGING_ROOT/moltbox" "$CLI_PATH"`,
 		`chmod 0755 "$CLI_PATH"`,
 		`cp "$CONFIG_SOURCE" "$CLI_CONFIG_PATH"`,
 		`chmod 0644 "$CLI_CONFIG_PATH"`,
+		`CLI_OWNER="$(stat -c '%u:%g' "$(dirname "$CLI_PATH")")"`,
+		`chown -R "$CLI_OWNER" "$SECRETS_ROOT"`,
+		`find "$SECRETS_ROOT" -type d -exec chmod 0700 {} +`,
+		`find "$SECRETS_ROOT" -type f -name '*.json' -exec chmod 0600 {} +`,
+		`if [ -f "$SECRETS_ROOT/master.key" ]; then chmod 0600 "$SECRETS_ROOT/master.key"; fi`,
 		`docker build -t moltbox-gateway:latest "$REPO"`,
 		`docker rm -f gateway >/dev/null 2>&1 || true`,
 		`cd "$GATEWAY_OUTPUT_DIR" && docker compose -f compose.yml -p "$COMPOSE_PROJECT" up -d --remove-orphans`,
