@@ -123,29 +123,28 @@ func (m *Manager) GatewayUpdate(ctx context.Context, route *cli.Route) (cli.Serv
 		return cli.ServiceActionResult{}, err
 	}
 
-	updateScript := fmt.Sprintf(
-		"sleep 2; docker rm -f gateway >/dev/null 2>&1 || true; cd %s && docker compose -f compose.yml -p %s up -d --remove-orphans",
-		outputDir,
-		definition.ComposeProject,
-	)
-	commandArgs := []string{
-		"run",
-		"-d",
-		"--rm",
-		"--name",
-		fmt.Sprintf("gateway-updater-%d", time.Now().Unix()),
-		"--entrypoint",
-		"sh",
-		"-v",
-		fmt.Sprintf("%s:%s", m.config.Paths.StateRoot, m.config.Paths.StateRoot),
-		"-v",
-		fmt.Sprintf("%s:%s", m.config.Paths.LogsRoot, m.config.Paths.LogsRoot),
-		"-v",
-		"/var/run/docker.sock:/var/run/docker.sock",
-		"moltbox-gateway:latest",
-		"-lc",
-		updateScript,
+	repoRoot := m.config.GatewayRepoRoot()
+	if strings.TrimSpace(repoRoot) == "" {
+		return cli.ServiceActionResult{}, fmt.Errorf("gateway update requires repos.gateway.url in gateway config")
 	}
+
+	cliPath := strings.TrimSpace(m.config.CLI.Path)
+	if !filepath.IsAbs(cliPath) {
+		return cli.ServiceActionResult{}, fmt.Errorf("gateway update requires cli.path to be an absolute host path")
+	}
+
+	cliConfigPath := strings.TrimSpace(m.config.CLI.ConfigPath)
+	if cliConfigPath == "" {
+		cliConfigPath = defaultHostCLIConfigPath(cliPath)
+	}
+	if !filepath.IsAbs(cliConfigPath) {
+		return cli.ServiceActionResult{}, fmt.Errorf("gateway update requires cli.config_path to be an absolute host path")
+	}
+
+	stagingRoot := filepath.Join(m.config.Paths.StateRoot, "updates", "gateway")
+	configSource := filepath.Join(outputDir, "config", "gateway", "config.yaml")
+	updateScript := buildGatewayUpdateScript(repoRoot, stagingRoot, cliPath, cliConfigPath, configSource, outputDir, definition.ComposeProject)
+	commandArgs := gatewayUpdateHelperCommand(m.config, repoRoot, cliPath, cliConfigPath, updateScript)
 
 	result, err := m.runner.Run(ctx, "", "docker", commandArgs...)
 	if err != nil {
@@ -162,6 +161,59 @@ func (m *Manager) GatewayUpdate(ctx context.Context, route *cli.Route) (cli.Serv
 		Action:  route.Action,
 		Command: append([]string{"docker"}, commandArgs...),
 	}, nil
+}
+
+func gatewayUpdateHelperCommand(cfg config.Config, repoRoot, cliPath, cliConfigPath, updateScript string) []string {
+	commandArgs := []string{
+		"run",
+		"-d",
+		"--rm",
+		"--name",
+		fmt.Sprintf("gateway-updater-%d", time.Now().Unix()),
+		"--entrypoint",
+		"sh",
+	}
+
+	for _, mount := range uniqueMountRoots(
+		cfg.Paths.StateRoot,
+		cfg.Paths.LogsRoot,
+		repoRoot,
+		filepath.Dir(cliPath),
+		filepath.Dir(cliConfigPath),
+	) {
+		commandArgs = append(commandArgs, "-v", fmt.Sprintf("%s:%s", mount, mount))
+	}
+
+	commandArgs = append(commandArgs,
+		"-v", "/var/run/docker.sock:/var/run/docker.sock",
+		"moltbox-gateway:latest",
+		"-lc",
+		updateScript,
+	)
+	return commandArgs
+}
+
+func buildGatewayUpdateScript(repoRoot, stagingRoot, cliPath, cliConfigPath, configSource, gatewayOutputDir, composeProject string) string {
+	return strings.Join([]string{
+		"set -eu",
+		fmt.Sprintf("REPO=%s", shellQuote(repoRoot)),
+		fmt.Sprintf("STAGING_ROOT=%s", shellQuote(stagingRoot)),
+		fmt.Sprintf("CLI_PATH=%s", shellQuote(cliPath)),
+		fmt.Sprintf("CLI_CONFIG_PATH=%s", shellQuote(cliConfigPath)),
+		fmt.Sprintf("CONFIG_SOURCE=%s", shellQuote(configSource)),
+		fmt.Sprintf("GATEWAY_OUTPUT_DIR=%s", shellQuote(gatewayOutputDir)),
+		fmt.Sprintf("COMPOSE_PROJECT=%s", shellQuote(composeProject)),
+		`mkdir -p "$STAGING_ROOT" "$(dirname "$CLI_PATH")" "$(dirname "$CLI_CONFIG_PATH")"`,
+		`if [ -d "$REPO/.git" ]; then git -C "$REPO" fetch --all --tags --prune && git -C "$REPO" pull --ff-only; fi`,
+		`docker run --rm -v "$REPO:/src" -v "$STAGING_ROOT:/out" -w /src golang:1.23-bookworm sh -lc 'go build -o /out/moltbox ./cmd/moltbox && go build -o /out/gateway ./cmd/gateway'`,
+		`cp "$STAGING_ROOT/moltbox" "$CLI_PATH"`,
+		`chmod 0755 "$CLI_PATH"`,
+		`cp "$CONFIG_SOURCE" "$CLI_CONFIG_PATH"`,
+		`chmod 0644 "$CLI_CONFIG_PATH"`,
+		`docker build -t moltbox-gateway:latest "$REPO"`,
+		`docker rm -f gateway >/dev/null 2>&1 || true`,
+		`cd "$GATEWAY_OUTPUT_DIR" && docker compose -f compose.yml -p "$COMPOSE_PROJECT" up -d --remove-orphans`,
+	}, "; ")
 }
 
 func (m *Manager) RestartService(ctx context.Context, route *cli.Route, service string) (cli.ServiceActionResult, error) {
@@ -762,6 +814,37 @@ func parseBool(value string) bool {
 	default:
 		return false
 	}
+}
+
+func defaultHostCLIConfigPath(cliPath string) string {
+	cleaned := filepath.Clean(cliPath)
+	suffix := filepath.Join(".local", "bin", "moltbox")
+	if strings.HasSuffix(cleaned, suffix) {
+		prefix := strings.TrimSuffix(cleaned, suffix)
+		return filepath.Join(prefix, ".config", "moltbox", "config.yaml")
+	}
+	return filepath.Join(filepath.Dir(cleaned), "moltbox-config.yaml")
+}
+
+func uniqueMountRoots(paths ...string) []string {
+	seen := map[string]struct{}{}
+	ordered := make([]string, 0, len(paths))
+	for _, value := range paths {
+		cleaned := strings.TrimSpace(filepath.Clean(value))
+		if cleaned == "" || cleaned == "." {
+			continue
+		}
+		if _, ok := seen[cleaned]; ok {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		ordered = append(ordered, cleaned)
+	}
+	return ordered
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 func ensureCaddyTLSAssets(certsDir string) error {

@@ -344,10 +344,15 @@ func TestGatewayUpdateStartsHelperContainer(t *testing.T) {
 			LogsRoot:    filepath.Join(root, "logs"),
 		},
 		Repos: appconfig.ReposConfig{
+			Gateway:  appconfig.RepoConfig{URL: filepath.Join(root, "gateway-repo")},
 			Services: appconfig.RepoConfig{URL: servicesRoot},
 			Runtime:  appconfig.RepoConfig{URL: runtimeRoot},
 		},
 		Gateway: appconfig.GatewayConfig{Host: "0.0.0.0", Port: 7460},
+		CLI: appconfig.CLIConfig{
+			Path:       filepath.Join(root, "home", "jpekovitch", ".local", "bin", "moltbox"),
+			ConfigPath: filepath.Join(root, "home", "jpekovitch", ".config", "moltbox", "config.yaml"),
+		},
 	}, fakeInspector{}, runner, nil)
 
 	result, err := manager.GatewayUpdate(context.Background(), &cli.Route{Resource: "gateway", Kind: cli.KindGateway, Action: "update", Subject: "gateway"})
@@ -361,7 +366,7 @@ func TestGatewayUpdateStartsHelperContainer(t *testing.T) {
 		t.Fatalf("expected network inspect/create + helper run, got %d commands", len(runner.commands))
 	}
 	got := strings.Join(runner.commands[2], " ")
-	if !strings.Contains(got, "run -d --rm") || !strings.Contains(got, "moltbox-gateway:latest") {
+	if !strings.Contains(got, "run -d --rm") || !strings.Contains(got, "moltbox-gateway:latest") || !strings.Contains(got, "golang:1.23-bookworm") || !strings.Contains(got, "cp \"$STAGING_ROOT/moltbox\" \"$CLI_PATH\"") {
 		t.Fatalf("gateway update helper command = %q", got)
 	}
 }

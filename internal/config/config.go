@@ -26,6 +26,7 @@ type PathsConfig struct {
 }
 
 type ReposConfig struct {
+	Gateway  RepoConfig
 	Services RepoConfig
 	Runtime  RepoConfig
 	Skills   RepoConfig
@@ -41,7 +42,8 @@ type GatewayConfig struct {
 }
 
 type CLIConfig struct {
-	Path string
+	Path       string
+	ConfigPath string
 }
 
 func Default() Config {
@@ -52,12 +54,16 @@ func Default() Config {
 			LogsRoot:    "/srv/moltbox-logs",
 			SecretsRoot: "/var/lib/moltbox/secrets",
 		},
+		Repos: ReposConfig{
+			Gateway: RepoConfig{URL: "/srv/moltbox-state/upstream/moltbox-gateway"},
+		},
 		Gateway: GatewayConfig{
 			Host: "0.0.0.0",
 			Port: 7460,
 		},
 		CLI: CLIConfig{
-			Path: "moltbox",
+			Path:       "moltbox",
+			ConfigPath: "",
 		},
 	}
 }
@@ -134,11 +140,18 @@ func Load(path string) (Config, error) {
 				cfg.Gateway.Port = port
 			}
 		case indent == 2 && section == "cli":
-			if key == "path" {
+			switch key {
+			case "path":
 				cfg.CLI.Path = value
+			case "config_path":
+				cfg.CLI.ConfigPath = value
 			}
 		case indent == 4 && section == "repos":
 			switch subsection {
+			case "gateway":
+				if key == "url" {
+					cfg.Repos.Gateway.URL = value
+				}
 			case "services":
 				if key == "url" {
 					cfg.Repos.Services.URL = value
@@ -165,6 +178,12 @@ func ConfigPath() string {
 	if value := strings.TrimSpace(os.Getenv("MOLTBOX_CONFIG_PATH")); value != "" {
 		return value
 	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		candidate := filepath.Join(home, ".config", "moltbox", "config.yaml")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
 	return DefaultConfigPath
 }
 
@@ -181,6 +200,10 @@ func (c Config) ListenAddress() string {
 
 func (c Config) ServicesRepoRoot() string {
 	return strings.TrimSpace(c.Repos.Services.URL)
+}
+
+func (c Config) GatewayRepoRoot() string {
+	return strings.TrimSpace(c.Repos.Gateway.URL)
 }
 
 func (c Config) RuntimeRepoRoot() string {

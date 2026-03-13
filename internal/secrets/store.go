@@ -45,7 +45,7 @@ func (s *Store) Set(scope, name, value string) error {
 	if err != nil {
 		return err
 	}
-	name, err := normalizeName(name)
+	name, err = normalizeName(name)
 	if err != nil {
 		return err
 	}
@@ -95,7 +95,7 @@ func (s *Store) Get(scope, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	name, err := normalizeName(name)
+	name, err = normalizeName(name)
 	if err != nil {
 		return "", err
 	}
@@ -151,7 +151,7 @@ func (s *Store) Delete(scope, name string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	name, err := normalizeName(name)
+	name, err = normalizeName(name)
 	if err != nil {
 		return false, err
 	}
