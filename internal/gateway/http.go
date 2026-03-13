@@ -336,10 +336,10 @@ func (s *Server) handleGatewayUpdate(writer http.ResponseWriter, request *http.R
 	}
 
 	route := &cli.Route{Resource: "gateway", Kind: cli.KindGateway, Action: "update", Subject: "gateway"}
-	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(request.Context(), 30*time.Second)
 	defer cancel()
 
-	result, err := s.orchestrator.DeployService(ctx, route, "gateway")
+	result, err := s.orchestrator.GatewayUpdate(ctx, route)
 	if err != nil {
 		s.writeJSON(writer, http.StatusBadGateway, cli.Error(
 			route,

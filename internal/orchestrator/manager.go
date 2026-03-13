@@ -2,7 +2,14 @@ package orchestrator
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,7 +82,7 @@ func (m *Manager) DeployService(ctx context.Context, route *cli.Route, service s
 		return cli.ServiceDeployResult{}, fmt.Errorf("docker compose up failed: %s", strings.TrimSpace(deployResult.Stdout))
 	}
 
-	containers, err := m.waitForContainers(ctx, definition.ContainerNames, 45*time.Second)
+	containers, err := m.waitForContainers(ctx, definition.ContainerNames, 2*time.Minute)
 	if err != nil {
 		return cli.ServiceDeployResult{}, err
 	}
@@ -88,6 +95,62 @@ func (m *Manager) DeployService(ctx context.Context, route *cli.Route, service s
 		OutputDir:     outputDir,
 		Command:       append([]string{"docker"}, commandArgs...),
 		Containers:    containers,
+	}, nil
+}
+
+func (m *Manager) GatewayUpdate(ctx context.Context, route *cli.Route) (cli.ServiceActionResult, error) {
+	definition, err := m.LoadServiceDefinition("gateway")
+	if err != nil {
+		return cli.ServiceActionResult{}, err
+	}
+
+	outputDir, _, err := m.RenderServiceAssets("gateway", definition)
+	if err != nil {
+		return cli.ServiceActionResult{}, err
+	}
+
+	if err := m.ensureNetwork(ctx); err != nil {
+		return cli.ServiceActionResult{}, err
+	}
+
+	updateScript := fmt.Sprintf(
+		"sleep 2; docker rm -f gateway >/dev/null 2>&1 || true; cd %s && docker compose -f compose.yml -p %s up -d --remove-orphans",
+		outputDir,
+		definition.ComposeProject,
+	)
+	commandArgs := []string{
+		"run",
+		"-d",
+		"--rm",
+		"--name",
+		fmt.Sprintf("gateway-updater-%d", time.Now().Unix()),
+		"--entrypoint",
+		"sh",
+		"-v",
+		fmt.Sprintf("%s:%s", m.config.Paths.StateRoot, m.config.Paths.StateRoot),
+		"-v",
+		fmt.Sprintf("%s:%s", m.config.Paths.LogsRoot, m.config.Paths.LogsRoot),
+		"-v",
+		"/var/run/docker.sock:/var/run/docker.sock",
+		"moltbox-gateway:latest",
+		"-lc",
+		updateScript,
+	}
+
+	result, err := m.runner.Run(ctx, "", "docker", commandArgs...)
+	if err != nil {
+		return cli.ServiceActionResult{}, err
+	}
+	if result.ExitCode != 0 {
+		return cli.ServiceActionResult{}, fmt.Errorf("gateway update helper failed: %s", strings.TrimSpace(result.Stdout))
+	}
+
+	return cli.ServiceActionResult{
+		OK:      true,
+		Route:   route,
+		Service: "gateway",
+		Action:  route.Action,
+		Command: append([]string{"docker"}, commandArgs...),
 	}, nil
 }
 
@@ -345,7 +408,10 @@ func (m *Manager) renderConfigAssets(service, outputDir string) error {
 		context := m.renderContext(service)
 		source := filepath.Join(m.config.RuntimeRepoRoot(), "caddy", "Caddyfile.template")
 		destination := filepath.Join(outputDir, "config", "caddy", "Caddyfile")
-		return renderFile(source, destination, context)
+		if err := renderFile(source, destination, context); err != nil {
+			return err
+		}
+		return ensureCaddyTLSAssets(filepath.Join(outputDir, "config", "caddy", "certs"))
 	case "ollama":
 		modelsDir := filepath.Join(outputDir, "shared", "models")
 		return os.MkdirAll(modelsDir, 0o755)
@@ -546,4 +612,72 @@ func parseBool(value string) bool {
 	default:
 		return false
 	}
+}
+
+func ensureCaddyTLSAssets(certsDir string) error {
+	certPath := filepath.Join(certsDir, "local.crt")
+	keyPath := filepath.Join(certsDir, "local.key")
+
+	if fileExists(certPath) && fileExists(keyPath) {
+		return nil
+	}
+	if err := os.MkdirAll(certsDir, 0o755); err != nil {
+		return err
+	}
+
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return fmt.Errorf("generate caddy tls key: %w", err)
+	}
+
+	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
+	if err != nil {
+		return fmt.Errorf("generate caddy tls serial: %w", err)
+	}
+
+	now := time.Now().UTC()
+	template := &x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			CommonName:   "moltbox local tls",
+			Organization: []string{"Moltbox"},
+		},
+		NotBefore:             now.Add(-1 * time.Hour),
+		NotAfter:              now.AddDate(5, 0, 0),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames: []string{
+			"moltbox-cli",
+			"moltbox-dev",
+			"moltbox-test",
+			"moltbox-prod",
+		},
+	}
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, template, template, privateKey.Public(), privateKey)
+	if err != nil {
+		return fmt.Errorf("generate caddy tls certificate: %w", err)
+	}
+
+	certBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
+	privateKeyBytes, err := x509.MarshalECPrivateKey(privateKey)
+	if err != nil {
+		return fmt.Errorf("marshal caddy tls key: %w", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: privateKeyBytes})
+
+	if err := os.WriteFile(certPath, certBytes, 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		return err
+	}
+	return nil
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }

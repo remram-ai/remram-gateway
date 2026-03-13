@@ -100,6 +100,52 @@ func TestRenderServiceAssetsForRuntimeService(t *testing.T) {
 	}
 }
 
+func TestRenderServiceAssetsForCaddyGeneratesTLSAssets(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	servicesRoot := filepath.Join(root, "services-repo")
+	runtimeRoot := filepath.Join(root, "runtime-repo")
+	stateRoot := filepath.Join(root, "state")
+
+	mustWriteFile(t, filepath.Join(servicesRoot, "services", "caddy", "service.yaml"), "compose_project: caddy\ncontainer_names:\n  - caddy\nruntime_required: true\n")
+	mustWriteFile(t, filepath.Join(servicesRoot, "services", "caddy", "compose.yml.template"), "services:\n  caddy:\n    container_name: \"{{ container_name }}\"\n")
+	mustWriteFile(t, filepath.Join(runtimeRoot, "caddy", "Caddyfile.template"), "https://moltbox-dev {\n  tls /etc/caddy/certs/local.crt /etc/caddy/certs/local.key\n}\n")
+
+	manager := NewManager(appconfig.Config{
+		Paths: appconfig.PathsConfig{
+			StateRoot:   stateRoot,
+			RuntimeRoot: filepath.Join(root, "runtime-state"),
+			LogsRoot:    filepath.Join(root, "logs"),
+		},
+		Repos: appconfig.ReposConfig{
+			Services: appconfig.RepoConfig{URL: servicesRoot},
+			Runtime:  appconfig.RepoConfig{URL: runtimeRoot},
+		},
+		Gateway: appconfig.GatewayConfig{Host: "0.0.0.0", Port: 7460},
+	}, fakeInspector{}, &fakeRunner{})
+
+	definition, err := manager.LoadServiceDefinition("caddy")
+	if err != nil {
+		t.Fatalf("LoadServiceDefinition() error = %v", err)
+	}
+
+	outputDir, _, err := manager.RenderServiceAssets("caddy", definition)
+	if err != nil {
+		t.Fatalf("RenderServiceAssets() error = %v", err)
+	}
+
+	for _, relative := range []string{
+		filepath.Join("config", "caddy", "Caddyfile"),
+		filepath.Join("config", "caddy", "certs", "local.crt"),
+		filepath.Join("config", "caddy", "certs", "local.key"),
+	} {
+		if _, err := os.Stat(filepath.Join(outputDir, relative)); err != nil {
+			t.Fatalf("expected %s to exist: %v", relative, err)
+		}
+	}
+}
+
 func TestDeployServiceRunsComposeAndInspectsContainers(t *testing.T) {
 	t.Parallel()
 
@@ -156,6 +202,55 @@ func TestDeployServiceRunsComposeAndInspectsContainers(t *testing.T) {
 	}
 	if got := strings.Join(runner.commands[1], " "); !strings.Contains(got, "compose") || !strings.Contains(got, "--build") {
 		t.Fatalf("compose up command = %q, want compose build command", got)
+	}
+}
+
+func TestGatewayUpdateStartsHelperContainer(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	servicesRoot := filepath.Join(root, "services-repo")
+	runtimeRoot := filepath.Join(root, "runtime-repo")
+	stateRoot := filepath.Join(root, "state")
+
+	mustWriteFile(t, filepath.Join(servicesRoot, "services", "gateway", "service.yaml"), "compose_project: gateway\ncontainer_names:\n  - gateway\nruntime_required: true\nskip_pull: true\n")
+	mustWriteFile(t, filepath.Join(servicesRoot, "services", "gateway", "compose.yml.template"), "services:\n  gateway:\n    container_name: \"{{ container_name }}\"\n")
+	mustWriteFile(t, filepath.Join(runtimeRoot, "gateway", "config.yaml"), "gateway:\n  host: 0.0.0.0\n  port: 7460\n")
+
+	runner := &fakeRunner{
+		results: []command.Result{
+			{ExitCode: 1},
+			{ExitCode: 0},
+			{ExitCode: 0},
+		},
+	}
+
+	manager := NewManager(appconfig.Config{
+		Paths: appconfig.PathsConfig{
+			StateRoot:   stateRoot,
+			RuntimeRoot: filepath.Join(root, "runtime-state"),
+			LogsRoot:    filepath.Join(root, "logs"),
+		},
+		Repos: appconfig.ReposConfig{
+			Services: appconfig.RepoConfig{URL: servicesRoot},
+			Runtime:  appconfig.RepoConfig{URL: runtimeRoot},
+		},
+		Gateway: appconfig.GatewayConfig{Host: "0.0.0.0", Port: 7460},
+	}, fakeInspector{}, runner)
+
+	result, err := manager.GatewayUpdate(context.Background(), &cli.Route{Resource: "gateway", Kind: cli.KindGateway, Action: "update", Subject: "gateway"})
+	if err != nil {
+		t.Fatalf("GatewayUpdate() error = %v", err)
+	}
+	if !result.OK {
+		t.Fatal("expected successful gateway update result")
+	}
+	if len(runner.commands) != 3 {
+		t.Fatalf("expected network inspect/create + helper run, got %d commands", len(runner.commands))
+	}
+	got := strings.Join(runner.commands[2], " ")
+	if !strings.Contains(got, "run -d --rm") || !strings.Contains(got, "moltbox-gateway:latest") {
+		t.Fatalf("gateway update helper command = %q", got)
 	}
 }
 
