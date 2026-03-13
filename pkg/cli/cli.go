@@ -9,8 +9,10 @@ import (
 )
 
 const (
-	Version             = "0.1.0-dev"
-	DefaultDockerSocket = "/var/run/docker.sock"
+	Version                  = "0.1.0-dev"
+	DefaultDockerSocket      = "/var/run/docker.sock"
+	DefaultGatewayURL        = "http://127.0.0.1:7460"
+	DefaultGatewayListenAddr = ":7460"
 
 	ExitOK             = 0
 	ExitFailure        = 1
@@ -63,6 +65,30 @@ type Envelope struct {
 	RecoveryMessage string `json:"recovery_message,omitempty"`
 }
 
+type RouteRequest struct {
+	Route   *Route `json:"route,omitempty"`
+	Service string `json:"service,omitempty"`
+}
+
+type DockerRunRequest struct {
+	Image string `json:"image"`
+}
+
+type GatewayHealthResult struct {
+	OK      bool   `json:"ok"`
+	Service string `json:"service"`
+	Version string `json:"version"`
+}
+
+type GatewayStatusResult struct {
+	OK            bool   `json:"ok"`
+	Route         *Route `json:"route"`
+	Service       string `json:"service"`
+	Version       string `json:"version"`
+	ListenAddress string `json:"listen_address"`
+	DockerSocket  string `json:"docker_socket"`
+}
+
 type DockerPingResult struct {
 	OK            bool   `json:"ok"`
 	Route         *Route `json:"route"`
@@ -74,6 +100,24 @@ type DockerPingResult struct {
 	OS            string `json:"os,omitempty"`
 	Arch          string `json:"arch,omitempty"`
 	KernelVersion string `json:"kernel_version,omitempty"`
+}
+
+type DockerRunResult struct {
+	OK            bool   `json:"ok"`
+	Route         *Route `json:"route"`
+	Image         string `json:"image"`
+	ContainerID   string `json:"container_id"`
+	ContainerName string `json:"container_name"`
+}
+
+type ServiceStatusResult struct {
+	OK            bool   `json:"ok"`
+	Route         *Route `json:"route"`
+	Service       string `json:"service"`
+	ContainerName string `json:"container_name"`
+	Image         string `json:"image,omitempty"`
+	Status        string `json:"status,omitempty"`
+	Running       bool   `json:"running"`
 }
 
 type ParseResult struct {
@@ -193,31 +237,42 @@ func parseGateway(args []string) ParseResult {
 			}
 		}
 	case "docker":
-		if len(args) != 3 || args[2] != "ping" {
+		if len(args) == 3 && args[2] == "ping" {
 			return ParseResult{
-				Envelope: Error(nil,
-					"parse_error",
-					"invalid gateway docker command",
-					"use: gateway docker ping",
-				),
-				Code: ExitParseError,
+				Route: &Route{
+					Resource: "gateway",
+					Kind:     KindGatewayDocker,
+					Tokens:   append([]string(nil), args...),
+					Action:   "ping",
+					Subject:  "docker",
+				},
+			}
+		}
+		if len(args) == 4 && args[2] == "run" {
+			return ParseResult{
+				Route: &Route{
+					Resource: "gateway",
+					Kind:     KindGatewayDocker,
+					Tokens:   append([]string(nil), args...),
+					Action:   "run",
+					Subject:  args[3],
+				},
 			}
 		}
 		return ParseResult{
-			Route: &Route{
-				Resource: "gateway",
-				Kind:     KindGatewayDocker,
-				Tokens:   append([]string(nil), args...),
-				Action:   "ping",
-				Subject:  "docker",
-			},
+			Envelope: Error(nil,
+				"parse_error",
+				"invalid gateway docker command",
+				"use: gateway docker ping | gateway docker run <image>",
+			),
+			Code: ExitParseError,
 		}
 	default:
 		return ParseResult{
 			Envelope: Error(nil,
 				"parse_error",
 				fmt.Sprintf("unknown gateway command '%s'", args[1]),
-				"use: gateway status|update|logs | gateway service <deploy|restart|status> <service> | gateway docker ping",
+				"use: gateway status|update|logs | gateway service <deploy|restart|status> <service> | gateway docker ping | gateway docker run <image>",
 			),
 			Code: ExitParseError,
 		}
@@ -346,6 +401,40 @@ func DockerSocketPath() string {
 	return DefaultDockerSocket
 }
 
+func GatewayURL() string {
+	if value := strings.TrimSpace(os.Getenv("MOLTBOX_GATEWAY_URL")); value != "" {
+		return strings.TrimRight(value, "/")
+	}
+	return DefaultGatewayURL
+}
+
+func GatewayListenAddress() string {
+	if value := strings.TrimSpace(os.Getenv("MOLTBOX_GATEWAY_LISTEN_ADDR")); value != "" {
+		return value
+	}
+	return DefaultGatewayListenAddr
+}
+
+func ExitCodeFromPayload(payload []byte) int {
+	var envelope Envelope
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return ExitFailure
+	}
+
+	if envelope.OK {
+		return ExitOK
+	}
+
+	switch envelope.ErrorType {
+	case "not_implemented":
+		return ExitNotImplemented
+	case "parse_error", "retired_namespace":
+		return ExitParseError
+	default:
+		return ExitFailure
+	}
+}
+
 func isHelpFlag(value string) bool {
 	return value == "-h" || value == "--help"
 }
@@ -362,6 +451,7 @@ Resources:
     service restart <service>
     service status <service>
     docker ping
+    docker run <image>
 
   dev|test|prod
     reload

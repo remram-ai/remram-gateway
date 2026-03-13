@@ -1,12 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"os"
 
-	"github.com/remram-ai/moltbox-gateway/internal/gateway"
-	"github.com/remram-ai/moltbox-gateway/internal/runtime"
-	"github.com/remram-ai/moltbox-gateway/internal/services"
+	"github.com/remram-ai/moltbox-gateway/internal/client"
 	"github.com/remram-ai/moltbox-gateway/pkg/cli"
 )
 
@@ -29,15 +28,21 @@ func run(args []string, stdout, _ io.Writer) int {
 		return result.Code
 	}
 
-	switch result.Route.Resource {
-	case "gateway":
-		return gateway.Handle(result.Route, stdout)
-	case "dev", "test", "prod":
-		return runtime.Handle(result.Route, stdout)
-	case "ollama", "opensearch", "caddy":
-		return services.Handle(result.Route, stdout)
-	default:
-		_ = cli.WriteJSON(stdout, cli.Error(result.Route, "parse_error", "unknown route target", "use a documented command"))
-		return cli.ExitParseError
+	gatewayClient := client.NewHTTPClient(cli.GatewayURL())
+	payload, err := gatewayClient.Execute(result.Route)
+	if err != nil {
+		_ = cli.WriteJSON(stdout, cli.Error(
+			result.Route,
+			"gateway_unreachable",
+			fmt.Sprintf("failed to contact gateway at %s", cli.GatewayURL()),
+			"verify the gateway container is running and the localhost control port is reachable",
+		))
+		return cli.ExitFailure
 	}
+
+	if _, err := stdout.Write(payload); err != nil {
+		return cli.ExitFailure
+	}
+
+	return cli.ExitCodeFromPayload(payload)
 }

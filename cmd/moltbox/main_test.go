@@ -2,106 +2,150 @@ package main
 
 import (
 	"encoding/json"
-	"net"
 	"net/http"
-	"path/filepath"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/remram-ai/moltbox-gateway/pkg/cli"
 )
 
-func TestRecognizedRoutesReturnNotImplemented(t *testing.T) {
-	t.Parallel()
-
+func TestCLIForwardsToGateway(t *testing.T) {
 	testCases := []struct {
-		name          string
-		args          []string
-		wantKind      string
-		wantAction    string
-		wantSubject   string
-		wantEnv       string
-		wantRuntime   string
-		wantNativeArg []string
+		name       string
+		args       []string
+		wantMethod string
+		wantPath   string
+		wantCode   int
+		handler    func(t *testing.T, writer http.ResponseWriter, request *http.Request)
 	}{
 		{
 			name:       "gateway status",
 			args:       []string{"gateway", "status"},
-			wantKind:   cli.KindGateway,
-			wantAction: "status",
+			wantMethod: http.MethodGet,
+			wantPath:   "/status",
+			wantCode:   cli.ExitOK,
+			handler: func(t *testing.T, writer http.ResponseWriter, request *http.Request) {
+				t.Helper()
+				_ = json.NewEncoder(writer).Encode(cli.GatewayStatusResult{
+					OK:            true,
+					Route:         &cli.Route{Resource: "gateway", Kind: cli.KindGateway, Action: "status"},
+					Service:       "gateway",
+					Version:       cli.Version,
+					ListenAddress: ":7460",
+					DockerSocket:  cli.DefaultDockerSocket,
+				})
+			},
 		},
 		{
-			name:        "gateway service deploy",
-			args:        []string{"gateway", "service", "deploy", "opensearch"},
-			wantKind:    cli.KindGatewayService,
-			wantAction:  "deploy",
-			wantSubject: "opensearch",
+			name:       "gateway docker ping",
+			args:       []string{"gateway", "docker", "ping"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/docker/ping",
+			wantCode:   cli.ExitOK,
+			handler: func(t *testing.T, writer http.ResponseWriter, request *http.Request) {
+				t.Helper()
+				_ = json.NewEncoder(writer).Encode(cli.DockerPingResult{
+					OK:            true,
+					Route:         &cli.Route{Resource: "gateway", Kind: cli.KindGatewayDocker, Action: "ping", Subject: "docker"},
+					DockerVersion: "29.3.0",
+				})
+			},
 		},
 		{
-			name:        "dev reload",
-			args:        []string{"dev", "reload"},
-			wantKind:    cli.KindRuntimeAction,
-			wantAction:  "reload",
-			wantEnv:     "dev",
-			wantRuntime: "openclaw-dev",
+			name:       "gateway docker run",
+			args:       []string{"gateway", "docker", "run", "hello-world"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/docker/run",
+			wantCode:   cli.ExitOK,
+			handler: func(t *testing.T, writer http.ResponseWriter, request *http.Request) {
+				t.Helper()
+				var payload cli.DockerRunRequest
+				if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				if payload.Image != "hello-world" {
+					t.Fatalf("payload.image = %q, want hello-world", payload.Image)
+				}
+				_ = json.NewEncoder(writer).Encode(cli.DockerRunResult{
+					OK:            true,
+					Route:         &cli.Route{Resource: "gateway", Kind: cli.KindGatewayDocker, Action: "run", Subject: "hello-world"},
+					Image:         "hello-world",
+					ContainerID:   "abc123",
+					ContainerName: "hello-world",
+				})
+			},
 		},
 		{
-			name:          "prod openclaw plugins list",
-			args:          []string{"prod", "openclaw", "plugins", "list"},
-			wantKind:      cli.KindRuntimeNative,
-			wantAction:    "openclaw",
-			wantEnv:       "prod",
-			wantRuntime:   "openclaw-prod",
-			wantNativeArg: []string{"plugins", "list"},
+			name:       "gateway service deploy",
+			args:       []string{"gateway", "service", "deploy", "opensearch"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/service/deploy",
+			wantCode:   cli.ExitNotImplemented,
+			handler: func(t *testing.T, writer http.ResponseWriter, request *http.Request) {
+				t.Helper()
+				var payload cli.RouteRequest
+				if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				if payload.Service != "opensearch" {
+					t.Fatalf("payload.service = %q, want opensearch", payload.Service)
+				}
+				_ = json.NewEncoder(writer).Encode(cli.NotImplemented(
+					&cli.Route{Resource: "gateway", Kind: cli.KindGatewayService, Action: "deploy", Subject: "opensearch"},
+					"gateway service deploy opensearch is not implemented in phase 1",
+					"phase 1 only boots the direct localhost control channel",
+				))
+			},
 		},
 		{
-			name:          "ollama passthrough",
-			args:          []string{"ollama", "ps"},
-			wantKind:      cli.KindServiceNative,
-			wantAction:    "passthrough",
-			wantNativeArg: []string{"ps"},
+			name:       "runtime action",
+			args:       []string{"dev", "reload"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/execute",
+			wantCode:   cli.ExitNotImplemented,
+			handler: func(t *testing.T, writer http.ResponseWriter, request *http.Request) {
+				t.Helper()
+				var payload cli.RouteRequest
+				if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				if payload.Route == nil || payload.Route.Environment != "dev" {
+					t.Fatalf("payload.route = %#v, want dev runtime route", payload.Route)
+				}
+				_ = json.NewEncoder(writer).Encode(cli.NotImplemented(
+					payload.Route,
+					"dev reload is not implemented in phase 1",
+					"phase 2 will add runtime orchestration",
+				))
+			},
 		},
 	}
 
 	for _, testCase := range testCases {
 		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.Method != testCase.wantMethod {
+					t.Fatalf("method = %s, want %s", request.Method, testCase.wantMethod)
+				}
+				if request.URL.Path != testCase.wantPath {
+					t.Fatalf("path = %s, want %s", request.URL.Path, testCase.wantPath)
+				}
+				testCase.handler(t, writer, request)
+			}))
+			defer server.Close()
+
+			t.Setenv("MOLTBOX_GATEWAY_URL", server.URL)
 
 			var output strings.Builder
 			code := run(testCase.args, &output, ioDiscard{})
-			if code != cli.ExitNotImplemented {
-				t.Fatalf("exit code = %d, want %d", code, cli.ExitNotImplemented)
+			if code != testCase.wantCode {
+				t.Fatalf("exit code = %d, want %d", code, testCase.wantCode)
 			}
 
-			var payload cli.Envelope
-			if err := json.Unmarshal([]byte(output.String()), &payload); err != nil {
-				t.Fatalf("decode payload: %v", err)
-			}
-
-			if payload.ErrorType != "not_implemented" {
-				t.Fatalf("error_type = %q, want not_implemented", payload.ErrorType)
-			}
-			if payload.Route == nil {
-				t.Fatal("route was nil")
-			}
-			if payload.Route.Kind != testCase.wantKind {
-				t.Fatalf("route.kind = %q, want %q", payload.Route.Kind, testCase.wantKind)
-			}
-			if payload.Route.Action != testCase.wantAction {
-				t.Fatalf("route.action = %q, want %q", payload.Route.Action, testCase.wantAction)
-			}
-			if payload.Route.Subject != testCase.wantSubject {
-				t.Fatalf("route.subject = %q, want %q", payload.Route.Subject, testCase.wantSubject)
-			}
-			if payload.Route.Environment != testCase.wantEnv {
-				t.Fatalf("route.environment = %q, want %q", payload.Route.Environment, testCase.wantEnv)
-			}
-			if payload.Route.Runtime != testCase.wantRuntime {
-				t.Fatalf("route.runtime = %q, want %q", payload.Route.Runtime, testCase.wantRuntime)
-			}
-			if strings.Join(payload.Route.NativeArgs, "|") != strings.Join(testCase.wantNativeArg, "|") {
-				t.Fatalf("route.native_args = %v, want %v", payload.Route.NativeArgs, testCase.wantNativeArg)
+			if output.Len() == 0 {
+				t.Fatal("expected gateway response output")
 			}
 		})
 	}
@@ -161,52 +205,21 @@ func TestUnknownResourceFails(t *testing.T) {
 	}
 }
 
-func TestGatewayDockerPing(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "docker.sock")
-
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatalf("listen unix socket: %v", err)
-	}
-	defer listener.Close()
-
-	server := &http.Server{
-		Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-			if request.URL.Path != "/version" {
-				http.NotFound(writer, request)
-				return
-			}
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"Version":"29.3.0","ApiVersion":"1.48","MinAPIVersion":"1.24","GitCommit":"5927d80","GoVersion":"go1.24","Os":"linux","Arch":"amd64","KernelVersion":"6.8.0"}`))
-		}),
-	}
-
-	go func() {
-		_ = server.Serve(listener)
-	}()
-	defer server.Close()
-
-	t.Setenv("MOLTBOX_DOCKER_SOCKET", socketPath)
+func TestGatewayUnavailable(t *testing.T) {
+	t.Setenv("MOLTBOX_GATEWAY_URL", "http://127.0.0.1:1")
 
 	var output strings.Builder
-	code := run([]string{"gateway", "docker", "ping"}, &output, ioDiscard{})
-	if code != cli.ExitOK {
-		t.Fatalf("exit code = %d, want %d", code, cli.ExitOK)
+	code := run([]string{"gateway", "status"}, &output, ioDiscard{})
+	if code != cli.ExitFailure {
+		t.Fatalf("exit code = %d, want %d", code, cli.ExitFailure)
 	}
 
-	var payload cli.DockerPingResult
+	var payload cli.Envelope
 	if err := json.Unmarshal([]byte(output.String()), &payload); err != nil {
 		t.Fatalf("decode payload: %v", err)
 	}
-
-	if !payload.OK {
-		t.Fatal("expected ok payload")
-	}
-	if payload.DockerVersion != "29.3.0" {
-		t.Fatalf("docker_version = %q, want 29.3.0", payload.DockerVersion)
-	}
-	if payload.Route == nil || payload.Route.Kind != cli.KindGatewayDocker {
-		t.Fatalf("route = %#v, want gateway docker route", payload.Route)
+	if payload.ErrorType != "gateway_unreachable" {
+		t.Fatalf("error_type = %q, want gateway_unreachable", payload.ErrorType)
 	}
 }
 

@@ -2,33 +2,26 @@ package runtime
 
 import (
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/remram-ai/moltbox-gateway/pkg/cli"
 )
 
-func Handle(route *cli.Route, out io.Writer) int {
-	var message string
-
+func Payload(route *cli.Route) any {
 	switch route.Kind {
 	case cli.KindRuntimeAction:
-		message = fmt.Sprintf("%s %s is not implemented in phase 1", route.Environment, route.Action)
+		return cli.NotImplemented(
+			route,
+			fmt.Sprintf("%s %s is not implemented in phase 1", route.Environment, route.Action),
+			"phase 2 will add runtime orchestration",
+		)
 	case cli.KindRuntimeNative:
-		message = fmt.Sprintf(
-			"%s openclaw passthrough is not implemented in phase 1 (requested: %s)",
-			route.Environment,
-			strings.Join(route.NativeArgs, " "),
+		return cli.NotImplemented(
+			route,
+			fmt.Sprintf("%s openclaw passthrough is not implemented in phase 1 (requested: %s)", route.Environment, strings.Join(route.NativeArgs, " ")),
+			"phase 2 will add runtime native passthrough execution",
 		)
 	default:
-		_ = cli.WriteJSON(out, cli.Error(route, "parse_error", "unsupported runtime route", "use a documented environment command"))
-		return cli.ExitParseError
+		return cli.Error(route, "parse_error", "unsupported runtime route", "use a documented environment command")
 	}
-
-	_ = cli.WriteJSON(out, cli.NotImplemented(
-		route,
-		message,
-		"phase 2 will add runtime orchestration and native passthrough execution",
-	))
-	return cli.ExitNotImplemented
 }
