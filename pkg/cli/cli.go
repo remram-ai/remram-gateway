@@ -25,6 +25,7 @@ const (
 	KindGatewayService = "gateway_service"
 	KindGatewayDocker  = "gateway_docker"
 	KindGatewayMCP     = "gateway_mcp"
+	KindGatewayToken   = "gateway_token"
 	KindScopedSecrets  = "scoped_secrets"
 	KindRuntimeAction  = "runtime_action"
 	KindRuntimeNative  = "runtime_openclaw"
@@ -201,6 +202,39 @@ type SecretListResult struct {
 	Secrets []SecretListItem `json:"secrets"`
 }
 
+type GatewayTokenInfo struct {
+	Name string `json:"name"`
+}
+
+type GatewayTokenCreateResult struct {
+	OK      bool   `json:"ok"`
+	Route   *Route `json:"route,omitempty"`
+	Name    string `json:"name"`
+	Token   string `json:"token"`
+	Created bool   `json:"created"`
+}
+
+type GatewayTokenRotateResult struct {
+	OK      bool   `json:"ok"`
+	Route   *Route `json:"route,omitempty"`
+	Name    string `json:"name"`
+	Token   string `json:"token"`
+	Rotated bool   `json:"rotated"`
+}
+
+type GatewayTokenDeleteResult struct {
+	OK      bool   `json:"ok"`
+	Route   *Route `json:"route,omitempty"`
+	Name    string `json:"name"`
+	Deleted bool   `json:"deleted"`
+}
+
+type GatewayTokenListResult struct {
+	OK     bool               `json:"ok"`
+	Route  *Route             `json:"route,omitempty"`
+	Tokens []GatewayTokenInfo `json:"tokens"`
+}
+
 type ParseResult struct {
 	Route    *Route
 	Envelope *Envelope
@@ -261,7 +295,7 @@ func parseGateway(args []string) ParseResult {
 			Envelope: Error(nil,
 				"parse_error",
 				"missing gateway command",
-				"use: gateway status|update|logs|mcp-stdio | gateway service <deploy|restart|status> <service> | gateway docker ping",
+				"use: gateway status|update|logs|mcp-stdio|token | gateway service <deploy|restart|status> <service> | gateway docker ping",
 			),
 			Code: ExitParseError,
 		}
@@ -369,12 +403,44 @@ func parseGateway(args []string) ParseResult {
 			),
 			Code: ExitParseError,
 		}
+	case "token":
+		if len(args) != 3 {
+			return ParseResult{
+				Envelope: Error(nil,
+					"parse_error",
+					"invalid gateway token command",
+					"use: gateway token create|list|delete|rotate",
+				),
+				Code: ExitParseError,
+			}
+		}
+		switch args[2] {
+		case "create", "list", "delete", "rotate":
+			return ParseResult{
+				Route: &Route{
+					Resource: "gateway",
+					Kind:     KindGatewayToken,
+					Tokens:   append([]string(nil), args...),
+					Action:   args[2],
+					Subject:  "mcp_http_token",
+				},
+			}
+		default:
+			return ParseResult{
+				Envelope: Error(nil,
+					"parse_error",
+					fmt.Sprintf("unknown gateway token action '%s'", args[2]),
+					"use: gateway token create|list|delete|rotate",
+				),
+				Code: ExitParseError,
+			}
+		}
 	default:
 		return ParseResult{
 			Envelope: Error(nil,
 				"parse_error",
 				fmt.Sprintf("unknown gateway command '%s'", args[1]),
-				"use: gateway status|update|logs|mcp-stdio | gateway service <deploy|restart|status> <service> | gateway docker ping | gateway docker run <image>",
+				"use: gateway status|update|logs|mcp-stdio|token | gateway service <deploy|restart|status> <service> | gateway docker ping | gateway docker run <image>",
 			),
 			Code: ExitParseError,
 		}
@@ -630,6 +696,10 @@ Resources:
     update
     logs
     mcp-stdio
+    token create
+    token list
+    token delete
+    token rotate
     service deploy <service>
     service restart <service>
     service status <service>

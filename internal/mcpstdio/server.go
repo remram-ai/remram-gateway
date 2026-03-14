@@ -65,8 +65,8 @@ func (s *Server) Run(stdin io.Reader, stdout io.Writer) error {
 			return err
 		}
 
-		var request requestEnvelope
-		if err := json.Unmarshal(message, &request); err != nil {
+		response, ok, err := s.HandleMessage(message)
+		if err != nil {
 			if err := writeMessage(stdout, responseEnvelope{
 				JSONRPC: "2.0",
 				Error: &responseError{
@@ -78,8 +78,6 @@ func (s *Server) Run(stdin io.Reader, stdout io.Writer) error {
 			}
 			continue
 		}
-
-		response, ok := s.handleRequest(request)
 		if !ok {
 			continue
 		}
@@ -87,6 +85,15 @@ func (s *Server) Run(stdin io.Reader, stdout io.Writer) error {
 			return err
 		}
 	}
+}
+
+func (s *Server) HandleMessage(message []byte) (responseEnvelope, bool, error) {
+	var request requestEnvelope
+	if err := json.Unmarshal(message, &request); err != nil {
+		return responseEnvelope{}, false, err
+	}
+	response, ok := s.handleRequest(request)
+	return response, ok, nil
 }
 
 func (s *Server) handleRequest(request requestEnvelope) (responseEnvelope, bool) {
@@ -98,6 +105,7 @@ func (s *Server) handleRequest(request requestEnvelope) (responseEnvelope, bool)
 			Result: map[string]any{
 				"protocolVersion": protocolVersion,
 				"capabilities": map[string]any{
+					"logging": map[string]any{},
 					"tools": map[string]any{
 						"listChanged": false,
 					},
@@ -110,6 +118,12 @@ func (s *Server) handleRequest(request requestEnvelope) (responseEnvelope, bool)
 		}, true
 	case "notifications/initialized":
 		return responseEnvelope{}, false
+	case "logging/setLevel":
+		return responseEnvelope{
+			JSONRPC: "2.0",
+			ID:      request.ID,
+			Result:  map[string]any{},
+		}, true
 	case "ping":
 		return responseEnvelope{
 			JSONRPC: "2.0",

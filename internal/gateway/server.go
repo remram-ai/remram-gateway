@@ -7,8 +7,11 @@ import (
 	"github.com/remram-ai/moltbox-gateway/internal/command"
 	appconfig "github.com/remram-ai/moltbox-gateway/internal/config"
 	"github.com/remram-ai/moltbox-gateway/internal/docker"
+	"github.com/remram-ai/moltbox-gateway/internal/localexec"
+	"github.com/remram-ai/moltbox-gateway/internal/mcpstdio"
 	"github.com/remram-ai/moltbox-gateway/internal/orchestrator"
 	"github.com/remram-ai/moltbox-gateway/internal/secrets"
+	"github.com/remram-ai/moltbox-gateway/internal/tokens"
 	"github.com/remram-ai/moltbox-gateway/pkg/cli"
 )
 
@@ -24,6 +27,9 @@ type Server struct {
 	dockerClient     *docker.Client
 	appConfig        appconfig.Config
 	orchestrator     *orchestrator.Manager
+	secretHandler    *secrets.Handler
+	tokenManager     *tokens.Manager
+	mcpServer        *mcpstdio.Server
 }
 
 func NewServer(config Config) *Server {
@@ -68,6 +74,8 @@ func NewServer(config Config) *Server {
 
 	dockerClient := docker.NewClient(dockerSocketPath)
 	secretHandler := secrets.NewHandler(appCfg.Paths.SecretsRoot)
+	tokenManager := tokens.NewManager(appCfg.Paths.SecretsRoot)
+	executor := localexec.New(appconfig.ConfigPath(), "http://127.0.0.1:7460")
 
 	return &Server{
 		listenAddress:    listenAddress,
@@ -75,6 +83,9 @@ func NewServer(config Config) *Server {
 		dockerClient:     dockerClient,
 		appConfig:        appCfg,
 		orchestrator:     orchestrator.NewManager(appCfg, dockerClient, runner, secretHandler),
+		secretHandler:    secretHandler,
+		tokenManager:     tokenManager,
+		mcpServer:        mcpstdio.New(executor),
 	}
 }
 

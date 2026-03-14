@@ -47,6 +47,14 @@ func (c *HTTPClient) Execute(route *cli.Route) ([]byte, error) {
 		return c.get("/logs")
 	case route.Kind == cli.KindGateway && route.Action == "update":
 		return c.post("/update", cli.RouteRequest{Route: route, Service: "gateway"})
+	case route.Kind == cli.KindGatewayToken && route.Action == "create":
+		return c.post("/token/create", cli.RouteRequest{Route: route})
+	case route.Kind == cli.KindGatewayToken && route.Action == "list":
+		return c.get("/token/list")
+	case route.Kind == cli.KindGatewayToken && route.Action == "delete":
+		return c.post("/token/delete", cli.RouteRequest{Route: route})
+	case route.Kind == cli.KindGatewayToken && route.Action == "rotate":
+		return c.post("/token/rotate", cli.RouteRequest{Route: route})
 	case route.Kind == cli.KindRuntimeAction && route.Action == "reload":
 		return c.post("/runtime/reload", cli.RouteRequest{Route: route})
 	case route.Kind == cli.KindRuntimeAction && route.Action == "checkpoint":

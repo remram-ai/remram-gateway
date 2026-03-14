@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -28,6 +29,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/runtime/reload", s.handleRuntimeReload)
 	mux.HandleFunc("/runtime/checkpoint", s.handleRuntimeCheckpoint)
 	mux.HandleFunc("/runtime/openclaw", s.handleRuntimeOpenClaw)
+	mux.HandleFunc("/token/create", s.handleTokenCreate)
+	mux.HandleFunc("/token/list", s.handleTokenList)
+	mux.HandleFunc("/token/delete", s.handleTokenDelete)
+	mux.HandleFunc("/token/rotate", s.handleTokenRotate)
+	mux.HandleFunc("/mcp", s.handleMCP)
 	mux.HandleFunc("/execute", s.handleExecute)
 	return mux
 }
@@ -350,6 +356,104 @@ func (s *Server) handleGatewayUpdate(writer http.ResponseWriter, request *http.R
 		return
 	}
 	s.writeJSON(writer, http.StatusOK, result)
+}
+
+func (s *Server) handleTokenCreate(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		s.writeJSON(writer, http.StatusMethodNotAllowed, cli.Error(nil, "parse_error", "method not allowed", "use POST /token/create"))
+		return
+	}
+	route := &cli.Route{Resource: "gateway", Kind: cli.KindGatewayToken, Action: "create", Subject: "mcp_http_token"}
+	result, err := s.tokenManager.Create(route)
+	if err != nil {
+		s.writeJSON(writer, http.StatusBadGateway, cli.Error(route, "token_create_failed", "failed to create MCP token", err.Error()))
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, result)
+}
+
+func (s *Server) handleTokenList(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		s.writeJSON(writer, http.StatusMethodNotAllowed, cli.Error(nil, "parse_error", "method not allowed", "use GET /token/list"))
+		return
+	}
+	route := &cli.Route{Resource: "gateway", Kind: cli.KindGatewayToken, Action: "list", Subject: "mcp_http_token"}
+	result, err := s.tokenManager.List(route)
+	if err != nil {
+		s.writeJSON(writer, http.StatusBadGateway, cli.Error(route, "token_list_failed", "failed to list MCP tokens", err.Error()))
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, result)
+}
+
+func (s *Server) handleTokenDelete(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		s.writeJSON(writer, http.StatusMethodNotAllowed, cli.Error(nil, "parse_error", "method not allowed", "use POST /token/delete"))
+		return
+	}
+	route := &cli.Route{Resource: "gateway", Kind: cli.KindGatewayToken, Action: "delete", Subject: "mcp_http_token"}
+	result, err := s.tokenManager.Delete(route)
+	if err != nil {
+		s.writeJSON(writer, http.StatusBadGateway, cli.Error(route, "token_delete_failed", "failed to delete MCP token", err.Error()))
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, result)
+}
+
+func (s *Server) handleTokenRotate(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		s.writeJSON(writer, http.StatusMethodNotAllowed, cli.Error(nil, "parse_error", "method not allowed", "use POST /token/rotate"))
+		return
+	}
+	route := &cli.Route{Resource: "gateway", Kind: cli.KindGatewayToken, Action: "rotate", Subject: "mcp_http_token"}
+	result, err := s.tokenManager.Rotate(route)
+	if err != nil {
+		s.writeJSON(writer, http.StatusBadGateway, cli.Error(route, "token_rotate_failed", "failed to rotate MCP token", err.Error()))
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, result)
+}
+
+func (s *Server) handleMCP(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		s.writeJSON(writer, http.StatusMethodNotAllowed, cli.Error(nil, "parse_error", "method not allowed", "use POST /mcp"))
+		return
+	}
+	authorized, err := s.tokenManager.ValidateBearerToken(request.Header.Get("Authorization"))
+	if err != nil {
+		s.writeJSON(writer, http.StatusUnauthorized, cli.Error(nil, "unauthorized", "failed to validate MCP token", err.Error()))
+		return
+	}
+	if !authorized {
+		s.writeJSON(writer, http.StatusUnauthorized, cli.Error(nil, "unauthorized", "missing or invalid MCP token", "send Authorization: Bearer <token>"))
+		return
+	}
+
+	body, err := io.ReadAll(request.Body)
+	if err != nil {
+		s.writeJSON(writer, http.StatusBadRequest, cli.Error(nil, "parse_error", "failed to read MCP request body", err.Error()))
+		return
+	}
+	response, ok, err := s.mcpServer.HandleMessage(body)
+	if err != nil {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(writer).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"error": map[string]any{
+				"code":    -32700,
+				"message": "parse error",
+			},
+		})
+		return
+	}
+	if !ok {
+		writer.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writer.Header().Set("Content-Type", "application/json")
+	writer.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(writer).Encode(response)
 }
 
 func (s *Server) handleRuntimeReload(writer http.ResponseWriter, request *http.Request) {

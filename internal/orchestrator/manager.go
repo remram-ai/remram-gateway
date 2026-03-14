@@ -164,6 +164,7 @@ func (m *Manager) GatewayUpdate(ctx context.Context, route *cli.Route) (cli.Serv
 }
 
 func gatewayUpdateHelperCommand(cfg config.Config, repoRoot, cliPath, cliConfigPath, updateScript string) []string {
+	cliWrapperPath := "/usr/local/bin/moltbox-cli-wrapper"
 	bootstrapWrapperPath := "/usr/local/bin/moltbox-bootstrap-wrapper"
 	systemConfigPath := "/etc/moltbox/config.yaml"
 	commandArgs := []string{
@@ -183,6 +184,7 @@ func gatewayUpdateHelperCommand(cfg config.Config, repoRoot, cliPath, cliConfigP
 		repoRoot,
 		filepath.Dir(cliPath),
 		filepath.Dir(cliConfigPath),
+		filepath.Dir(cliWrapperPath),
 		filepath.Dir(bootstrapWrapperPath),
 		filepath.Dir(systemConfigPath),
 	) {
@@ -199,6 +201,8 @@ func gatewayUpdateHelperCommand(cfg config.Config, repoRoot, cliPath, cliConfigP
 }
 
 func buildGatewayUpdateScript(repoRoot, stagingRoot, cliPath, cliConfigPath, configSource, gatewayOutputDir, composeProject, secretsRoot string) string {
+	cliWrapperSource := filepath.Join(repoRoot, "scripts", "moltbox-cli-wrapper.sh")
+	cliWrapperPath := "/usr/local/bin/moltbox-cli-wrapper"
 	bootstrapWrapperSource := filepath.Join(repoRoot, "scripts", "moltbox-bootstrap-wrapper.sh")
 	bootstrapWrapperPath := "/usr/local/bin/moltbox-bootstrap-wrapper"
 	sharedCLIPath := "/usr/local/bin/moltbox"
@@ -213,6 +217,8 @@ func buildGatewayUpdateScript(repoRoot, stagingRoot, cliPath, cliConfigPath, con
 		fmt.Sprintf("GATEWAY_OUTPUT_DIR=%s", shellQuote(gatewayOutputDir)),
 		fmt.Sprintf("COMPOSE_PROJECT=%s", shellQuote(composeProject)),
 		fmt.Sprintf("SECRETS_ROOT=%s", shellQuote(secretsRoot)),
+		fmt.Sprintf("CLI_WRAPPER_SOURCE=%s", shellQuote(cliWrapperSource)),
+		fmt.Sprintf("CLI_WRAPPER_PATH=%s", shellQuote(cliWrapperPath)),
 		fmt.Sprintf("BOOTSTRAP_WRAPPER_SOURCE=%s", shellQuote(bootstrapWrapperSource)),
 		fmt.Sprintf("BOOTSTRAP_WRAPPER_PATH=%s", shellQuote(bootstrapWrapperPath)),
 		fmt.Sprintf("SHARED_CLI_PATH=%s", shellQuote(sharedCLIPath)),
@@ -229,6 +235,8 @@ func buildGatewayUpdateScript(repoRoot, stagingRoot, cliPath, cliConfigPath, con
 		`chmod 0644 "$CLI_CONFIG_PATH"`,
 		`cp "$CONFIG_SOURCE" "$SYSTEM_CONFIG_PATH"`,
 		`chmod 0644 "$SYSTEM_CONFIG_PATH"`,
+		`sed "s|__MOLTBOX_CLI_PATH__|$SHARED_CLI_PATH|g" "$CLI_WRAPPER_SOURCE" > "$CLI_WRAPPER_PATH"`,
+		`chmod 0755 "$CLI_WRAPPER_PATH"`,
 		`sed "s|__MOLTBOX_CLI_PATH__|$SHARED_CLI_PATH|g" "$BOOTSTRAP_WRAPPER_SOURCE" > "$BOOTSTRAP_WRAPPER_PATH"`,
 		`chmod 0755 "$BOOTSTRAP_WRAPPER_PATH"`,
 		`CLI_OWNER="$(stat -c '%u:%g' "$(dirname "$CLI_PATH")")"`,

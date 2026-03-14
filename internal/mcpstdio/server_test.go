@@ -42,6 +42,36 @@ func TestServerListsTools(t *testing.T) {
 	}
 }
 
+func TestServerInitializeAdvertisesLoggingCapability(t *testing.T) {
+	t.Parallel()
+
+	output := runServer(t, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"vscode","version":"1.0"}}}`, &fakeExecutor{})
+	response := decodeResponse(t, output)
+
+	result, ok := response["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("result = %#v, want map", response["result"])
+	}
+	capabilities, ok := result["capabilities"].(map[string]any)
+	if !ok {
+		t.Fatalf("capabilities = %#v, want map", result["capabilities"])
+	}
+	if _, ok := capabilities["logging"].(map[string]any); !ok {
+		t.Fatalf("logging capability missing from %#v", capabilities)
+	}
+}
+
+func TestServerAcceptsLoggingSetLevel(t *testing.T) {
+	t.Parallel()
+
+	output := runServer(t, `{"jsonrpc":"2.0","id":4,"method":"logging/setLevel","params":{"level":"debug"}}`, &fakeExecutor{})
+	response := decodeResponse(t, output)
+
+	if got, ok := response["result"].(map[string]any); !ok || len(got) != 0 {
+		t.Fatalf("result = %#v, want empty object", response["result"])
+	}
+}
+
 func TestServerRunsCLIThroughExecutor(t *testing.T) {
 	t.Parallel()
 
