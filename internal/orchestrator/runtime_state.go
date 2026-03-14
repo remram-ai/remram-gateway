@@ -106,13 +106,21 @@ func (m *Manager) RuntimeSkillDeploy(ctx context.Context, route *cli.Route) (cli
 	if err != nil {
 		return cli.RuntimeSkillResult{}, err
 	}
+	previousLog := log
 	log.Events = append(log.Events, event)
 	if err := m.stateStore.SaveReplayLog(service, log); err != nil {
 		return cli.RuntimeSkillResult{}, err
 	}
 
-	if err := m.installSkillFromGatewayState(ctx, service, event); err != nil {
-		_ = m.stateStore.RemoveReplayEvent(service, eventID)
+	reloadRoute := &cli.Route{
+		Resource:    route.Resource,
+		Kind:        cli.KindRuntimeAction,
+		Action:      "reload",
+		Environment: route.Environment,
+		Runtime:     service,
+	}
+	if _, err := m.DeployService(ctx, reloadRoute, service); err != nil {
+		_ = m.stateStore.SaveReplayLog(service, previousLog)
 		return cli.RuntimeSkillResult{}, err
 	}
 
