@@ -524,7 +524,7 @@ func parseRuntime(args []string) ParseResult {
 		}
 		route.Kind = KindRuntimeNative
 		route.Action = "openclaw"
-		route.NativeArgs = append([]string(nil), args[2:]...)
+		route.NativeArgs = normalizeRuntimeNativeArgs(args[2:])
 		return ParseResult{Route: route}
 	case "secrets":
 		return parseScopedSecrets(args[0], args)
@@ -587,11 +587,7 @@ func parseScopedSecrets(scope string, args []string) ParseResult {
 			},
 		}
 	case "set", "delete":
-		maxArgs := 4
-		if args[2] == "set" {
-			maxArgs = 5
-		}
-		if len(args) < 4 || len(args) > maxArgs {
+		if len(args) < 4 {
 			return ParseResult{
 				Envelope: Error(nil,
 					"parse_error",
@@ -607,8 +603,18 @@ func parseScopedSecrets(scope string, args []string) ParseResult {
 			}
 		}
 		nativeArgs := []string(nil)
-		if args[2] == "set" && len(args) == 5 {
-			nativeArgs = []string{args[4]}
+		if args[2] == "delete" && len(args) != 4 {
+			return ParseResult{
+				Envelope: Error(nil,
+					"parse_error",
+					fmt.Sprintf("invalid %s secrets delete command", scope),
+					fmt.Sprintf("use: %s secrets delete <NAME>", scope),
+				),
+				Code: ExitParseError,
+			}
+		}
+		if args[2] == "set" && len(args) >= 5 {
+			nativeArgs = []string{strings.Join(args[4:], " ")}
 		}
 		return ParseResult{
 			Route: &Route{
@@ -653,6 +659,51 @@ func parseServicePassthrough(args []string) ParseResult {
 			NativeArgs: append([]string(nil), args[1:]...),
 		},
 	}
+}
+
+func normalizeRuntimeNativeArgs(args []string) []string {
+	if len(args) == 0 {
+		return nil
+	}
+
+	switch args[0] {
+	case "agent":
+		return normalizeFlagTextValues(args, map[string]struct{}{
+			"-m":         {},
+			"--message":  {},
+			"--reply-to": {},
+		})
+	default:
+		return append([]string(nil), args...)
+	}
+}
+
+func normalizeFlagTextValues(args []string, textFlags map[string]struct{}) []string {
+	normalized := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		token := args[i]
+		normalized = append(normalized, token)
+		if _, ok := textFlags[token]; !ok {
+			continue
+		}
+		if i+1 >= len(args) {
+			continue
+		}
+
+		valueParts := []string{args[i+1]}
+		j := i + 1
+		for j+1 < len(args) && !looksLikeFlag(args[j+1]) {
+			valueParts = append(valueParts, args[j+1])
+			j++
+		}
+		normalized = append(normalized, strings.Join(valueParts, " "))
+		i = j
+	}
+	return normalized
+}
+
+func looksLikeFlag(token string) bool {
+	return strings.HasPrefix(token, "--") || (strings.HasPrefix(token, "-") && len(token) > 1)
 }
 
 func Error(route *Route, errorType, errorMessage, recoveryMessage string) *Envelope {

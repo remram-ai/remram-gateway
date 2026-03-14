@@ -251,22 +251,7 @@ func buildGatewayUpdateScript(repoRoot, stagingRoot, cliPath, cliConfigPath, con
 }
 
 func (m *Manager) RestartService(ctx context.Context, route *cli.Route, service string) (cli.ServiceActionResult, error) {
-	canonicalService := canonicalServiceName(service)
-	definition, err := m.LoadServiceDefinition(canonicalService)
-	if err != nil {
-		return cli.ServiceActionResult{}, err
-	}
-
-	commandArgs := append([]string{"restart"}, definition.ContainerNames...)
-	restartResult, err := m.runner.Run(ctx, "", "docker", commandArgs...)
-	if err != nil {
-		return cli.ServiceActionResult{}, err
-	}
-	if restartResult.ExitCode != 0 {
-		return cli.ServiceActionResult{}, fmt.Errorf("docker restart failed: %s", strings.TrimSpace(restartResult.Stdout))
-	}
-
-	containers, err := m.waitForContainers(ctx, definition.ContainerNames, 45*time.Second)
+	deployResult, err := m.DeployService(ctx, route, service)
 	if err != nil {
 		return cli.ServiceActionResult{}, err
 	}
@@ -276,8 +261,8 @@ func (m *Manager) RestartService(ctx context.Context, route *cli.Route, service 
 		Route:      route,
 		Service:    service,
 		Action:     route.Action,
-		Command:    append([]string{"docker"}, commandArgs...),
-		Containers: containers,
+		Command:    deployResult.Command,
+		Containers: deployResult.Containers,
 	}, nil
 }
 

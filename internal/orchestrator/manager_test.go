@@ -395,6 +395,70 @@ func TestDeployServiceRunsComposeAndInspectsContainers(t *testing.T) {
 	}
 }
 
+func TestRestartServiceUsesDeployLifecycle(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	servicesRoot := filepath.Join(root, "services-repo")
+	runtimeRoot := filepath.Join(root, "runtime-repo")
+	stateRoot := filepath.Join(root, "state")
+
+	mustWriteFile(t, filepath.Join(servicesRoot, "services", "ollama", "service.yaml"), "compose_project: ollama\ncontainer_names:\n  - ollama\nskip_pull: true\n")
+	mustWriteFile(t, filepath.Join(servicesRoot, "services", "ollama", "compose.yml.template"), "services:\n  ollama:\n    container_name: \"{{ container_name }}\"\n")
+
+	runner := &fakeRunner{
+		results: []command.Result{
+			{ExitCode: 0},
+			{ExitCode: 0},
+		},
+	}
+	containerInfo := docker.ContainerInfo{}
+	containerInfo.Name = "/ollama"
+	containerInfo.Config.Image = "ollama/ollama:latest"
+	containerInfo.State.Status = "running"
+	containerInfo.State.Running = true
+	containerInfo.State.Health = &struct {
+		Status string `json:"Status"`
+	}{Status: "healthy"}
+
+	manager := NewManager(appconfig.Config{
+		Paths: appconfig.PathsConfig{
+			StateRoot:   stateRoot,
+			RuntimeRoot: filepath.Join(root, "runtime-state"),
+			LogsRoot:    filepath.Join(root, "logs"),
+		},
+		Repos: appconfig.ReposConfig{
+			Services: appconfig.RepoConfig{URL: servicesRoot},
+			Runtime:  appconfig.RepoConfig{URL: runtimeRoot},
+		},
+		Gateway: appconfig.GatewayConfig{Host: "0.0.0.0", Port: 7460},
+	}, fakeInspector{
+		containers: map[string]docker.ContainerInfo{
+			"ollama": containerInfo,
+		},
+	}, runner, nil)
+
+	result, err := manager.RestartService(context.Background(), &cli.Route{Resource: "gateway", Kind: cli.KindGatewayService, Action: "restart", Subject: "ollama"}, "ollama")
+	if err != nil {
+		t.Fatalf("RestartService() error = %v", err)
+	}
+	if !result.OK {
+		t.Fatal("expected successful restart result")
+	}
+	if len(runner.commands) != 2 {
+		t.Fatalf("expected network inspect + compose up, got %d commands", len(runner.commands))
+	}
+	if got := strings.Join(runner.commands[1], " "); !strings.Contains(got, "compose") || !strings.Contains(got, "--force-recreate") {
+		t.Fatalf("restart command = %q, want compose recreate command", got)
+	}
+	if got := strings.Join(runner.commands[1], " "); strings.Contains(got, " restart ") {
+		t.Fatalf("restart command = %q, should not use docker restart", got)
+	}
+	if len(result.Containers) != 1 || result.Containers[0].Health != "healthy" {
+		t.Fatalf("restart containers = %#v, want healthy ollama container", result.Containers)
+	}
+}
+
 func TestGatewayUpdateStartsHelperContainer(t *testing.T) {
 	t.Parallel()
 

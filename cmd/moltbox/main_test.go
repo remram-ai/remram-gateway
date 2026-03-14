@@ -501,6 +501,133 @@ func TestLoadSecretValueAcceptsEOFWithoutNewline(t *testing.T) {
 	}
 }
 
+func TestSSHWrapperModePreservesQuotedArgs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", request.Method)
+		}
+		if request.URL.Path != "/runtime/openclaw" {
+			t.Fatalf("path = %s, want /runtime/openclaw", request.URL.Path)
+		}
+
+		var payload cli.RouteRequest
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		wantArgs := []string{"agent", "--agent", "main", "--local", "--thinking", "off", "--message", "Say hello in one sentence.", "--json"}
+		if got := payload.Route.NativeArgs; !equalStrings(got, wantArgs) {
+			t.Fatalf("payload.route.native_args = %#v, want %#v", got, wantArgs)
+		}
+
+		_ = json.NewEncoder(writer).Encode(cli.CommandResult{
+			OK:            true,
+			Route:         payload.Route,
+			ContainerName: "openclaw-dev",
+			ExitCode:      0,
+			Stdout:        `{"ok":true}`,
+		})
+	}))
+	defer server.Close()
+
+	t.Setenv("MOLTBOX_GATEWAY_URL", server.URL)
+
+	var stdout strings.Builder
+	code := run([]string{
+		"__ssh-wrapper=automation",
+		`moltbox dev openclaw agent --agent main --local --thinking off --message Say hello in one sentence. --json`,
+	}, &stdout, ioDiscard{})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want %d", code, cli.ExitOK)
+	}
+}
+
+func TestSSHWrapperModeBootstrapDeniesRestrictedCommand(t *testing.T) {
+	t.Parallel()
+
+	var stdout strings.Builder
+	var stderr strings.Builder
+	code := run([]string{
+		"__ssh-wrapper=bootstrap",
+		`moltbox test reload`,
+	}, &stdout, &stderr)
+	if code != 126 {
+		t.Fatalf("exit code = %d, want 126", code)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "bootstrap access denied: reload is not permitted for diagnostic-only environments") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestSSHWrapperModePreservesQuotedSecretValue(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", request.Method)
+		}
+		if request.URL.Path != "/execute" {
+			t.Fatalf("path = %s, want /execute", request.URL.Path)
+		}
+
+		var payload cli.RouteRequest
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if payload.SecretValue != "value with spaces" {
+			t.Fatalf("payload.secret_value = %q, want %q", payload.SecretValue, "value with spaces")
+		}
+
+		_ = json.NewEncoder(writer).Encode(cli.SecretSetResult{
+			OK:     true,
+			Route:  payload.Route,
+			Scope:  "dev",
+			Name:   "TEST_SECRET",
+			Stored: true,
+		})
+	}))
+	defer server.Close()
+
+	t.Setenv("MOLTBOX_GATEWAY_URL", server.URL)
+
+	var stdout strings.Builder
+	code := run([]string{
+		"__ssh-wrapper=automation",
+		`moltbox dev secrets set TEST_SECRET value with spaces`,
+	}, &stdout, ioDiscard{})
+	if code != cli.ExitOK {
+		t.Fatalf("exit code = %d, want %d", code, cli.ExitOK)
+	}
+}
+
+func TestSSHWrapperModeRejectsShellOperators(t *testing.T) {
+	t.Parallel()
+
+	var stderr strings.Builder
+	code := run([]string{
+		"__ssh-wrapper=automation",
+		`moltbox dev openclaw health --json; whoami`,
+	}, ioDiscard{}, &stderr)
+	if code != cli.ExitFailure {
+		t.Fatalf("exit code = %d, want %d", code, cli.ExitFailure)
+	}
+	if !strings.Contains(stderr.String(), `unsupported shell operator ";"`) {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
 type ioDiscard struct{}
 
 func (ioDiscard) Write(p []byte) (int, error) {

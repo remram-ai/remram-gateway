@@ -10,14 +10,23 @@ import (
 	appconfig "github.com/remram-ai/moltbox-gateway/internal/config"
 	"github.com/remram-ai/moltbox-gateway/internal/localexec"
 	"github.com/remram-ai/moltbox-gateway/internal/mcpstdio"
+	"github.com/remram-ai/moltbox-gateway/internal/sshwrap"
 	"github.com/remram-ai/moltbox-gateway/pkg/cli"
 )
+
+const sshWrapperArgPrefix = "__ssh-wrapper="
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	normalizedArgs, code := normalizeSSHWrapperArgs(args, stderr)
+	if code != cli.ExitOK {
+		return code
+	}
+
+	args = normalizedArgs
 	result := cli.Parse(args)
 
 	if result.Route != nil && result.Route.Kind == cli.KindGatewayMCP {
@@ -59,6 +68,33 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cli.ExitFailure
 	}
 	return code
+}
+
+func normalizeSSHWrapperArgs(args []string, stderr io.Writer) ([]string, int) {
+	if len(args) == 0 || !strings.HasPrefix(args[0], sshWrapperArgPrefix) {
+		return args, cli.ExitOK
+	}
+	if len(args) != 2 {
+		_, _ = fmt.Fprintln(stderr, "ssh wrapper parse failed: expected mode and raw command")
+		return nil, cli.ExitFailure
+	}
+
+	mode := strings.TrimPrefix(args[0], sshWrapperArgPrefix)
+	if strings.TrimSpace(args[1]) == "" {
+		_, _ = fmt.Fprintf(stderr, "%s access denied: missing command\n", sshwrap.DenyPrefix(mode))
+		return nil, 126
+	}
+
+	normalized, denyReason, err := sshwrap.Resolve(mode, args[1])
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "ssh wrapper parse failed: %v\n", err)
+		return nil, cli.ExitFailure
+	}
+	if denyReason != "" {
+		_, _ = fmt.Fprintf(stderr, "%s access denied: %s\n", sshwrap.DenyPrefix(mode), denyReason)
+		return nil, 126
+	}
+	return normalized, cli.ExitOK
 }
 
 func loadSecretValue(stdin io.Reader) (string, error) {
