@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -94,11 +95,12 @@ func loadSecretValue(stdin io.Reader) (string, error) {
 		return value, nil
 	}
 
-	data, err := io.ReadAll(stdin)
-	if err != nil {
+	reader := bufio.NewReader(stdin)
+	data, err := reader.ReadString('\n')
+	if err != nil && err != io.EOF {
 		return "", err
 	}
-	value := strings.TrimRight(string(data), "\r\n")
+	value := strings.TrimRight(data, "\r\n")
 	if value == "" {
 		return "", fmt.Errorf("pipe the secret value on stdin or set MOLTBOX_SECRET_VALUE")
 	}

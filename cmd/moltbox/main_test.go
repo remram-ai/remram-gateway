@@ -2,12 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/remram-ai/moltbox-gateway/pkg/cli"
 )
@@ -403,6 +405,54 @@ func TestScopedSecretsCommandsRunLocally(t *testing.T) {
 	var deleteOutput strings.Builder
 	if code := run([]string{"dev", "secrets", "delete", "TOGETHER_API_KEY"}, &deleteOutput, ioDiscard{}); code != cli.ExitOK {
 		t.Fatalf("delete exit code = %d, want %d", code, cli.ExitOK)
+	}
+}
+
+func TestLoadSecretValueReturnsAfterFirstNewline(t *testing.T) {
+	t.Parallel()
+
+	reader, writer := io.Pipe()
+	result := make(chan struct {
+		value string
+		err   error
+	}, 1)
+
+	go func() {
+		value, err := loadSecretValue(reader)
+		result <- struct {
+			value string
+			err   error
+		}{value: value, err: err}
+	}()
+
+	if _, err := writer.Write([]byte("interactive-secret\n")); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+
+	select {
+	case got := <-result:
+		if got.err != nil {
+			t.Fatalf("loadSecretValue() error = %v", got.err)
+		}
+		if got.value != "interactive-secret" {
+			t.Fatalf("loadSecretValue() value = %q, want interactive-secret", got.value)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("loadSecretValue() blocked waiting for EOF after newline")
+	}
+
+	_ = writer.Close()
+}
+
+func TestLoadSecretValueAcceptsEOFWithoutNewline(t *testing.T) {
+	t.Parallel()
+
+	value, err := loadSecretValue(strings.NewReader("piped-secret"))
+	if err != nil {
+		t.Fatalf("loadSecretValue() error = %v", err)
+	}
+	if value != "piped-secret" {
+		t.Fatalf("loadSecretValue() value = %q, want piped-secret", value)
 	}
 }
 

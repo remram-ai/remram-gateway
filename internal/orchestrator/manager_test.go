@@ -227,7 +227,7 @@ func TestRenderServiceAssetsForCaddyGeneratesTLSAssets(t *testing.T) {
 
 	mustWriteFile(t, filepath.Join(servicesRoot, "services", "caddy", "service.yaml"), "compose_project: caddy\ncontainer_names:\n  - caddy\nruntime_required: true\n")
 	mustWriteFile(t, filepath.Join(servicesRoot, "services", "caddy", "compose.yml.template"), "services:\n  caddy:\n    container_name: \"{{ container_name }}\"\n")
-	mustWriteFile(t, filepath.Join(runtimeRoot, "caddy", "Caddyfile.template"), "https://moltbox-cli {\n  tls /etc/caddy/certs/local.crt /etc/caddy/certs/local.key\n}\n")
+	mustWriteFile(t, filepath.Join(runtimeRoot, "caddy", "Caddyfile.template"), "(moltbox_cli_tls) {\n  tls /etc/caddy/certs/local.crt /etc/caddy/certs/local.key {\n    client_auth {\n      mode require_and_verify\n      trust_pool file /etc/caddy/certs/local.crt\n    }\n  }\n}\n\nhttps://moltbox-cli {\n  import moltbox_cli_tls\n}\n")
 
 	manager := NewManager(appconfig.Config{
 		Paths: appconfig.PathsConfig{
@@ -256,6 +256,8 @@ func TestRenderServiceAssetsForCaddyGeneratesTLSAssets(t *testing.T) {
 		filepath.Join("config", "caddy", "Caddyfile"),
 		filepath.Join("config", "caddy", "certs", "local.crt"),
 		filepath.Join("config", "caddy", "certs", "local.key"),
+		filepath.Join("config", "caddy", "clients", "jason-cli", "jason-cli.crt"),
+		filepath.Join("config", "caddy", "clients", "jason-cli", "jason-cli.key"),
 	} {
 		if _, err := os.Stat(filepath.Join(outputDir, relative)); err != nil {
 			t.Fatalf("expected %s to exist: %v", relative, err)
@@ -269,10 +271,34 @@ func TestRenderServiceAssetsForCaddyGeneratesTLSAssets(t *testing.T) {
 	if !strings.Contains(string(caddyfileBytes), "https://moltbox-cli") {
 		t.Fatalf("rendered caddyfile missing moltbox-cli route: %s", caddyfileBytes)
 	}
+	if !strings.Contains(string(caddyfileBytes), "mode require_and_verify") {
+		t.Fatalf("rendered caddyfile missing client_auth requirement: %s", caddyfileBytes)
+	}
+	if !strings.Contains(string(caddyfileBytes), "trust_pool file /etc/caddy/certs/local.crt") {
+		t.Fatalf("rendered caddyfile missing client_auth trust root: %s", caddyfileBytes)
+	}
 
 	certPath := filepath.Join(outputDir, "config", "caddy", "certs", "local.crt")
 	if !certificateHasDNSNames(certPath, []string{"moltbox-cli", "moltbox-dev", "moltbox-test", "moltbox-prod"}) {
 		t.Fatalf("rendered caddy cert missing required SANs")
+	}
+
+	rootCertificate := mustParseCertificate(t, certPath)
+	if !hasUsage(rootCertificate, x509.ExtKeyUsageServerAuth) || !hasUsage(rootCertificate, x509.ExtKeyUsageClientAuth) {
+		t.Fatalf("rendered Moltbox root cert EKUs = %v, want serverAuth and clientAuth", rootCertificate.ExtKeyUsage)
+	}
+	clientCertificate := mustParseCertificate(t, filepath.Join(outputDir, "config", "caddy", "clients", "jason-cli", "jason-cli.crt"))
+	if clientCertificate.Subject.CommonName != "jason-cli" {
+		t.Fatalf("client certificate CN = %q, want jason-cli", clientCertificate.Subject.CommonName)
+	}
+	if !reflect.DeepEqual(clientCertificate.Subject.Organization, []string{"Moltbox"}) {
+		t.Fatalf("client certificate organization = %v, want [Moltbox]", clientCertificate.Subject.Organization)
+	}
+	if clientCertificate.CheckSignatureFrom(rootCertificate) != nil {
+		t.Fatal("client certificate is not signed by the rendered Moltbox root")
+	}
+	if !hasClientAuthUsage(clientCertificate) {
+		t.Fatal("client certificate missing clientAuth extended key usage")
 	}
 }
 
@@ -286,7 +312,7 @@ func TestRenderServiceAssetsForCaddyUsesExactCanonicalSANSet(t *testing.T) {
 
 	mustWriteFile(t, filepath.Join(servicesRoot, "services", "caddy", "service.yaml"), "compose_project: caddy\ncontainer_names:\n  - caddy\nruntime_required: true\n")
 	mustWriteFile(t, filepath.Join(servicesRoot, "services", "caddy", "compose.yml.template"), "services:\n  caddy:\n    container_name: \"{{ container_name }}\"\n")
-	mustWriteFile(t, filepath.Join(runtimeRoot, "caddy", "Caddyfile.template"), "https://moltbox-cli {\n  tls /etc/caddy/certs/local.crt /etc/caddy/certs/local.key\n}\n")
+	mustWriteFile(t, filepath.Join(runtimeRoot, "caddy", "Caddyfile.template"), "(moltbox_cli_tls) {\n  tls /etc/caddy/certs/local.crt /etc/caddy/certs/local.key {\n    client_auth {\n      mode require_and_verify\n      trust_pool file /etc/caddy/certs/local.crt\n    }\n  }\n}\n\nhttps://moltbox-cli {\n  import moltbox_cli_tls\n}\n")
 
 	manager := NewManager(appconfig.Config{
 		Paths: appconfig.PathsConfig{
@@ -454,17 +480,48 @@ func mustWriteFile(t *testing.T, path, content string) {
 func mustParseCertificate(t *testing.T, path string) *x509.Certificate {
 	t.Helper()
 
+	certificates := mustParseCertificates(t, path)
+	return certificates[0]
+}
+
+func mustParseCertificates(t *testing.T, path string) []*x509.Certificate {
+	t.Helper()
+
 	pemBytes, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read cert %s: %v", path, err)
 	}
-	block, _ := pem.Decode(pemBytes)
-	if block == nil {
-		t.Fatalf("decode cert %s: no PEM block", path)
+	certificates := make([]*x509.Certificate, 0, 2)
+	for len(pemBytes) > 0 {
+		block, rest := pem.Decode(pemBytes)
+		pemBytes = rest
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		certificate, parseErr := x509.ParseCertificate(block.Bytes)
+		if parseErr != nil {
+			t.Fatalf("parse cert %s: %v", path, parseErr)
+		}
+		certificates = append(certificates, certificate)
 	}
-	certificate, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		t.Fatalf("parse cert %s: %v", path, err)
+	if len(certificates) == 0 {
+		t.Fatalf("decode cert %s: no PEM blocks", path)
 	}
-	return certificate
+	return certificates
+}
+
+func hasClientAuthUsage(certificate *x509.Certificate) bool {
+	return hasUsage(certificate, x509.ExtKeyUsageClientAuth)
+}
+
+func hasUsage(certificate *x509.Certificate, expected x509.ExtKeyUsage) bool {
+	for _, usage := range certificate.ExtKeyUsage {
+		if usage == expected {
+			return true
+		}
+	}
+	return false
 }

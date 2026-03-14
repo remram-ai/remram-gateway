@@ -5,8 +5,8 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/x509"
 	"crypto/x509/pkix"
+	"crypto/x509"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -25,6 +25,8 @@ import (
 )
 
 const internalNetworkName = "moltbox_internal"
+
+const defaultCaddyClientCommonName = "jason-cli"
 
 type ContainerInspector interface {
 	InspectContainer(ctx context.Context, name string) (docker.ContainerInfo, error)
@@ -501,7 +503,10 @@ func (m *Manager) renderConfigAssets(service, outputDir string) error {
 		if err := renderFile(source, destination, context); err != nil {
 			return err
 		}
-		return ensureCaddyTLSAssets(filepath.Join(outputDir, "config", "caddy", "certs"))
+		return ensureCaddyTLSAssets(
+			filepath.Join(outputDir, "config", "caddy", "certs"),
+			filepath.Join(outputDir, "config", "caddy", "clients"),
+		)
 	case "ollama":
 		modelsDir := filepath.Join(outputDir, "shared", "models")
 		return os.MkdirAll(modelsDir, 0o755)
@@ -856,7 +861,7 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
-func ensureCaddyTLSAssets(certsDir string) error {
+func ensureCaddyTLSAssets(certsDir, clientsDir string) error {
 	certPath := filepath.Join(certsDir, "local.crt")
 	keyPath := filepath.Join(certsDir, "local.key")
 	requiredDNSNames := []string{
@@ -867,7 +872,11 @@ func ensureCaddyTLSAssets(certsDir string) error {
 	}
 
 	if fileExists(certPath) && fileExists(keyPath) && certificateHasDNSNames(certPath, requiredDNSNames) {
-		return nil
+		certificate, privateKey, err := loadECDSACertificateAndKey(certPath, keyPath)
+		if err != nil {
+			return err
+		}
+		return ensureCaddyClientCertificate(clientsDir, certificate, privateKey, defaultCaddyClientCommonName)
 	}
 	if err := os.MkdirAll(certsDir, 0o755); err != nil {
 		return err
@@ -894,7 +903,7 @@ func ensureCaddyTLSAssets(certsDir string) error {
 		NotBefore:             now.Add(-1 * time.Hour),
 		NotAfter:              now.AddDate(5, 0, 0),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 		DNSNames:             requiredDNSNames,
@@ -906,19 +915,14 @@ func ensureCaddyTLSAssets(certsDir string) error {
 	}
 
 	certBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
-	privateKeyBytes, err := x509.MarshalECPrivateKey(privateKey)
-	if err != nil {
-		return fmt.Errorf("marshal caddy tls key: %w", err)
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: privateKeyBytes})
-
 	if err := os.WriteFile(certPath, certBytes, 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+	if err := writeECDSAPrivateKey(keyPath, privateKey); err != nil {
 		return err
 	}
-	return nil
+
+	return ensureCaddyClientCertificate(clientsDir, template, privateKey, defaultCaddyClientCommonName)
 }
 
 func certificateHasDNSNames(certPath string, requiredNames []string) bool {
@@ -937,6 +941,9 @@ func certificateHasDNSNames(certPath string, requiredNames []string) bool {
 	if !certificate.IsCA {
 		return false
 	}
+	if !hasExtendedKeyUsage(certificate, x509.ExtKeyUsageServerAuth) || !hasExtendedKeyUsage(certificate, x509.ExtKeyUsageClientAuth) {
+		return false
+	}
 	available := make(map[string]struct{}, len(certificate.DNSNames))
 	for _, name := range certificate.DNSNames {
 		available[name] = struct{}{}
@@ -952,9 +959,181 @@ func certificateHasDNSNames(certPath string, requiredNames []string) bool {
 	return true
 }
 
+func ensureCaddyClientCertificate(clientsDir string, signingCertificate *x509.Certificate, signingPrivateKey *ecdsa.PrivateKey, commonName string) error {
+	clientDir := filepath.Join(clientsDir, commonName)
+	certPath := filepath.Join(clientDir, commonName+".crt")
+	keyPath := filepath.Join(clientDir, commonName+".key")
+	subject := pkix.Name{
+		CommonName:   commonName,
+		Organization: []string{"Moltbox"},
+	}
+
+	if fileExists(certPath) && fileExists(keyPath) && clientCertificateMatches(certPath, signingCertificate, subject) {
+		return nil
+	}
+	if err := os.MkdirAll(clientDir, 0o700); err != nil {
+		return fmt.Errorf("create caddy client dir: %w", err)
+	}
+
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return fmt.Errorf("generate caddy client key: %w", err)
+	}
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return fmt.Errorf("generate caddy client serial: %w", err)
+	}
+	now := time.Now().UTC()
+	template := &x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject:      subject,
+		NotBefore:    now.Add(-1 * time.Hour),
+		NotAfter:     now.AddDate(3, 0, 0),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, template, signingCertificate, privateKey.Public(), signingPrivateKey)
+	if err != nil {
+		return fmt.Errorf("generate caddy client certificate: %w", err)
+	}
+	certBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
+	if err := os.WriteFile(certPath, certBytes, 0o600); err != nil {
+		return err
+	}
+	return writeECDSAPrivateKey(keyPath, privateKey)
+}
+
+func clientCertificateMatches(certPath string, signingCertificate *x509.Certificate, subject pkix.Name) bool {
+	certificate, err := loadCertificate(certPath)
+	if err != nil {
+		return false
+	}
+	if certificate.Subject.CommonName != subject.CommonName {
+		return false
+	}
+	if len(certificate.Subject.Organization) != len(subject.Organization) {
+		return false
+	}
+	for index, value := range subject.Organization {
+		if certificate.Subject.Organization[index] != value {
+			return false
+		}
+	}
+	if certificate.Issuer.String() != signingCertificate.Subject.String() {
+		return false
+	}
+	if certificate.CheckSignatureFrom(signingCertificate) != nil {
+		return false
+	}
+	hasClientAuth := false
+	for _, usage := range certificate.ExtKeyUsage {
+		if usage == x509.ExtKeyUsageClientAuth {
+			hasClientAuth = true
+			break
+		}
+	}
+	if !hasClientAuth {
+		return false
+	}
+	return true
+}
+
+func loadECDSACertificateAndKey(certPath, keyPath string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
+	certificate, err := loadCertificate(certPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	privateKey, err := loadECDSAPrivateKey(keyPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	return certificate, privateKey, nil
+}
+
+func loadCertificate(path string) (*x509.Certificate, error) {
+	certificates, err := loadCertificates(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(certificates) == 0 {
+		return nil, fmt.Errorf("decode certificate %s: no PEM block", path)
+	}
+	return certificates[0], nil
+}
+
+func loadCertificates(path string) ([]*x509.Certificate, error) {
+	pemData, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	certificates := make([]*x509.Certificate, 0, 2)
+	for len(pemData) > 0 {
+		var block *pem.Block
+		block, pemData = pem.Decode(pemData)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		certificate, parseErr := x509.ParseCertificate(block.Bytes)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		certificates = append(certificates, certificate)
+	}
+	if len(certificates) == 0 {
+		return nil, fmt.Errorf("decode certificate %s: no PEM block", path)
+	}
+	return certificates, nil
+}
+
+func loadECDSAPrivateKey(path string) (*ecdsa.PrivateKey, error) {
+	pemData, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(pemData)
+	if block == nil {
+		return nil, fmt.Errorf("decode private key %s: no PEM block", path)
+	}
+	privateKey, err := x509.ParseECPrivateKey(block.Bytes)
+	if err == nil {
+		return privateKey, nil
+	}
+	pkcs8Key, pkcs8Err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if pkcs8Err != nil {
+		return nil, err
+	}
+	ecdsaKey, ok := pkcs8Key.(*ecdsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("private key %s is not ECDSA", path)
+	}
+	return ecdsaKey, nil
+}
+
+func writeECDSAPrivateKey(path string, privateKey *ecdsa.PrivateKey) error {
+	privateKeyBytes, err := x509.MarshalECPrivateKey(privateKey)
+	if err != nil {
+		return fmt.Errorf("marshal ecdsa key: %w", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: privateKeyBytes})
+	return os.WriteFile(path, keyPEM, 0o600)
+}
+
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+func hasExtendedKeyUsage(certificate *x509.Certificate, expected x509.ExtKeyUsage) bool {
+	for _, usage := range certificate.ExtKeyUsage {
+		if usage == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func copyTree(source, destination string) error {
