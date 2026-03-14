@@ -1,5 +1,11 @@
 # Scripts
 
-Bootstrap helpers for the Go-based gateway live here.
+Bootstrap and operator-automation helpers for the Go-based gateway live here.
 
-Phase 1 does not require a permanent build script yet. The verified host build/install flow uses a temporary `golang:1.23-bookworm` container.
+Current scripts cover:
+
+- host CLI wrapper setup
+- bootstrap wrapper setup
+- restricted SSH automation account provisioning
+
+The verified build and install flow still uses a temporary `golang:1.23-bookworm` container during gateway self-update.

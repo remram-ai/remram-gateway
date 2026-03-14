@@ -1,6 +1,6 @@
 # Deploy
 
-Phase 1 ends with a direct localhost control path:
+Current deploy path:
 
 ```text
 host moltbox CLI
@@ -10,13 +10,21 @@ host moltbox CLI
         -> host Docker Engine
 ```
 
-Current bootstrap state:
+Current appliance posture:
 
 - the host CLI is installed at `~/.local/bin/moltbox`
 - the long-running control plane is the `gateway` container
-- the bootstrap image tag is `moltbox-gateway:latest`
-- the proof command is `moltbox gateway docker run hello-world`
+- the gateway image tag is `moltbox-gateway:latest`
+- service definitions come from `moltbox-services`
+- baseline runtime config comes from `moltbox-runtime`
+- managed skill packages come from `remram-skills`
 
-Next implementation threads should extend this scaffold instead of replacing it.
+Useful verification commands:
 
-Phase 1 intentionally does not implement full service deployment, dependency containers, runtime environments, or reverse proxy wiring.
+- `moltbox gateway status`
+- `moltbox gateway service status <service>`
+- `moltbox dev openclaw skills list`
+- `moltbox gateway docker ping`
+
+The host CLI remains a thin client.
+The control-plane behavior lives in the `gateway` container and the service orchestration code in this repository.
