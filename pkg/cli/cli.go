@@ -28,6 +28,7 @@ const (
 	KindGatewayToken   = "gateway_token"
 	KindScopedSecrets  = "scoped_secrets"
 	KindRuntimeAction  = "runtime_action"
+	KindRuntimeSkill   = "runtime_skill"
 	KindRuntimeNative  = "runtime_openclaw"
 	KindServiceNative  = "service_passthrough"
 )
@@ -173,6 +174,19 @@ type RuntimeCheckpointResult struct {
 	Image         string `json:"image"`
 	SnapshotDir   string `json:"snapshot_dir"`
 	ReplayCleared bool   `json:"replay_cleared"`
+}
+
+type RuntimeSkillResult struct {
+	OK             bool   `json:"ok"`
+	Route          *Route `json:"route"`
+	Runtime        string `json:"runtime"`
+	Skill          string `json:"skill"`
+	CanonicalSkill string `json:"canonical_skill"`
+	Action         string `json:"action"`
+	DeploymentID   string `json:"deployment_id,omitempty"`
+	EventID        string `json:"event_id,omitempty"`
+	PackageDir     string `json:"package_dir,omitempty"`
+	ReplayCount    int    `json:"replay_count,omitempty"`
 }
 
 type CommandResult struct {
@@ -493,7 +507,7 @@ func parseRuntime(args []string) ParseResult {
 			Envelope: Error(nil,
 				"parse_error",
 				fmt.Sprintf("missing command for environment '%s'", args[0]),
-				fmt.Sprintf("use: %s reload|checkpoint|openclaw <command>|secrets <command>", args[0]),
+				fmt.Sprintf("use: %s reload|checkpoint|skill deploy <skill>|skill rollback <skill>|openclaw <command>|secrets <command>", args[0]),
 			),
 			Code: ExitParseError,
 		}
@@ -521,6 +535,8 @@ func parseRuntime(args []string) ParseResult {
 		route.Kind = KindRuntimeAction
 		route.Action = args[1]
 		return ParseResult{Route: route}
+	case "skill":
+		return parseRuntimeSkill(route, args)
 	case "openclaw":
 		if len(args) < 3 {
 			return ParseResult{
@@ -543,7 +559,37 @@ func parseRuntime(args []string) ParseResult {
 			Envelope: Error(nil,
 				"parse_error",
 				fmt.Sprintf("unknown environment command '%s'", args[1]),
-				fmt.Sprintf("use: %s reload|checkpoint|openclaw <command>|secrets <command>", args[0]),
+				fmt.Sprintf("use: %s reload|checkpoint|skill deploy <skill>|skill rollback <skill>|openclaw <command>|secrets <command>", args[0]),
+			),
+			Code: ExitParseError,
+		}
+	}
+}
+
+func parseRuntimeSkill(route *Route, args []string) ParseResult {
+	if len(args) != 4 {
+		return ParseResult{
+			Envelope: Error(nil,
+				"parse_error",
+				fmt.Sprintf("invalid skill command for environment '%s'", args[0]),
+				fmt.Sprintf("use: %s skill deploy <skill> | %s skill rollback <skill>", args[0], args[0]),
+			),
+			Code: ExitParseError,
+		}
+	}
+
+	switch args[2] {
+	case "deploy", "rollback":
+		route.Kind = KindRuntimeSkill
+		route.Action = args[2]
+		route.Subject = args[3]
+		return ParseResult{Route: route}
+	default:
+		return ParseResult{
+			Envelope: Error(nil,
+				"parse_error",
+				fmt.Sprintf("unknown skill action '%s'", args[2]),
+				fmt.Sprintf("use: %s skill deploy <skill> | %s skill rollback <skill>", args[0], args[0]),
 			),
 			Code: ExitParseError,
 		}
@@ -814,6 +860,8 @@ Resources:
   dev|test|prod
     reload
     checkpoint
+    skill deploy <skill>
+    skill rollback <skill>
     openclaw <command>
     secrets set <name> [value]
     secrets list

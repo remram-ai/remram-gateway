@@ -44,6 +44,30 @@ func TestParseScopedSecretsSetJoinsInlineValue(t *testing.T) {
 	}
 }
 
+func TestParseRuntimeSkillDeploy(t *testing.T) {
+	t.Parallel()
+
+	result := Parse([]string{"dev", "skill", "deploy", "together"})
+	if result.Route == nil {
+		t.Fatal("Parse() route = nil")
+	}
+	if result.Route.Kind != KindRuntimeSkill || result.Route.Action != "deploy" || result.Route.Subject != "together" {
+		t.Fatalf("Parse() route = %#v, want dev runtime skill deploy route", result.Route)
+	}
+}
+
+func TestParseRuntimeSkillRollback(t *testing.T) {
+	t.Parallel()
+
+	result := Parse([]string{"dev", "skill", "rollback", "together"})
+	if result.Route == nil {
+		t.Fatal("Parse() route = nil")
+	}
+	if result.Route.Kind != KindRuntimeSkill || result.Route.Action != "rollback" || result.Route.Subject != "together" {
+		t.Fatalf("Parse() route = %#v, want dev runtime skill rollback route", result.Route)
+	}
+}
+
 func equalArgs(got, want []string) bool {
 	if len(got) != len(want) {
 		return false

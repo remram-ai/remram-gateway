@@ -28,6 +28,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/update", s.handleGatewayUpdate)
 	mux.HandleFunc("/runtime/reload", s.handleRuntimeReload)
 	mux.HandleFunc("/runtime/checkpoint", s.handleRuntimeCheckpoint)
+	mux.HandleFunc("/runtime/skill/deploy", s.handleRuntimeSkillDeploy)
+	mux.HandleFunc("/runtime/skill/rollback", s.handleRuntimeSkillRollback)
 	mux.HandleFunc("/runtime/openclaw", s.handleRuntimeOpenClaw)
 	mux.HandleFunc("/token/create", s.handleTokenCreate)
 	mux.HandleFunc("/token/list", s.handleTokenList)
@@ -558,6 +560,68 @@ func (s *Server) handleRuntimeCheckpoint(writer http.ResponseWriter, request *ht
 			payload.Route,
 			"runtime_checkpoint_failed",
 			fmt.Sprintf("failed to checkpoint runtime '%s'", payload.Route.Runtime),
+			err.Error(),
+		))
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, result)
+}
+
+func (s *Server) handleRuntimeSkillDeploy(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		s.writeJSON(writer, http.StatusMethodNotAllowed, cli.Error(nil, "parse_error", "method not allowed", "use POST /runtime/skill/deploy"))
+		return
+	}
+
+	payload, ok := s.parseRouteRequest(writer, request, "send JSON with the parsed runtime skill route")
+	if !ok {
+		return
+	}
+	if payload.Route == nil || payload.Route.Kind != cli.KindRuntimeSkill || payload.Route.Action != "deploy" {
+		s.writeJSON(writer, http.StatusBadRequest, cli.Error(payload.Route, "parse_error", "missing runtime skill deploy route", "use: dev|test|prod skill deploy <skill>"))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Minute)
+	defer cancel()
+
+	result, err := s.orchestrator.RuntimeSkillDeploy(ctx, payload.Route)
+	if err != nil {
+		s.writeJSON(writer, http.StatusBadGateway, cli.Error(
+			payload.Route,
+			"runtime_skill_deploy_failed",
+			fmt.Sprintf("failed to deploy skill '%s' into runtime '%s'", payload.Route.Subject, payload.Route.Runtime),
+			err.Error(),
+		))
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, result)
+}
+
+func (s *Server) handleRuntimeSkillRollback(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		s.writeJSON(writer, http.StatusMethodNotAllowed, cli.Error(nil, "parse_error", "method not allowed", "use POST /runtime/skill/rollback"))
+		return
+	}
+
+	payload, ok := s.parseRouteRequest(writer, request, "send JSON with the parsed runtime skill route")
+	if !ok {
+		return
+	}
+	if payload.Route == nil || payload.Route.Kind != cli.KindRuntimeSkill || payload.Route.Action != "rollback" {
+		s.writeJSON(writer, http.StatusBadRequest, cli.Error(payload.Route, "parse_error", "missing runtime skill rollback route", "use: dev|test|prod skill rollback <skill>"))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Minute)
+	defer cancel()
+
+	result, err := s.orchestrator.RuntimeSkillRollback(ctx, payload.Route)
+	if err != nil {
+		s.writeJSON(writer, http.StatusBadGateway, cli.Error(
+			payload.Route,
+			"runtime_skill_rollback_failed",
+			fmt.Sprintf("failed to rollback skill '%s' in runtime '%s'", payload.Route.Subject, payload.Route.Runtime),
 			err.Error(),
 		))
 		return

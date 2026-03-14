@@ -15,6 +15,10 @@ import (
 
 const defaultRuntimeImage = "ghcr.io/openclaw/openclaw:latest"
 
+var runtimeSkillAliases = map[string]string{
+	"together": "together-escalation",
+}
+
 type deployableSkill struct {
 	Name      string
 	SourceDir string
@@ -31,10 +35,7 @@ func isRuntimeService(service string) bool {
 }
 
 func (m *Manager) prepareRuntimeDeploy(_ context.Context, route *cli.Route, service string) error {
-	if err := m.restoreRuntimeBaseline(service); err != nil {
-		return err
-	}
-	return m.registerRuntimeDeployEvents(route, service)
+	return m.restoreRuntimeBaseline(service)
 }
 
 func (m *Manager) restoreRuntimeBaseline(service string) error {
@@ -60,84 +61,158 @@ func (m *Manager) restoreRuntimeBaseline(service string) error {
 	return nil
 }
 
-func (m *Manager) registerRuntimeDeployEvents(route *cli.Route, service string) error {
-	skills, err := m.discoverPureSkills()
-	if err != nil {
-		return err
-	}
-	if len(skills) == 0 {
-		return nil
+func (m *Manager) RuntimeSkillDeploy(ctx context.Context, route *cli.Route) (cli.RuntimeSkillResult, error) {
+	service := runtimeService(route)
+	if !isRuntimeService(service) {
+		return cli.RuntimeSkillResult{}, fmt.Errorf("skill deploy is only supported for runtime services")
 	}
 
-	checkpoint, _, err := m.stateStore.LoadCheckpoint(service)
+	skill, canonicalSkill, err := m.resolveDeployableSkill(route.Subject)
 	if err != nil {
-		return err
+		return cli.RuntimeSkillResult{}, err
 	}
+
+	previousDigest, err := m.effectiveSkillDigest(service, canonicalSkill)
+	if err != nil {
+		return cli.RuntimeSkillResult{}, err
+	}
+
+	deploymentID := newGatewayID("deploy")
+	eventID := newGatewayID("event")
+	stagedDir, err := m.stateStore.StageReplayPackage(service, eventID, skill.SourceDir)
+	if err != nil {
+		return cli.RuntimeSkillResult{}, err
+	}
+
+	event := deploystate.ReplayEvent{
+		EventID:       eventID,
+		DeploymentID:  deploymentID,
+		Timestamp:     time.Now().UTC().Format(time.RFC3339),
+		Runtime:       service,
+		Type:          "skill_install",
+		Skill:         canonicalSkill,
+		PackageDir:    stagedDir,
+		PackageDigest: skill.Digest,
+		ContainerPath: filepath.ToSlash(filepath.Join("/home/node/.openclaw/skills", canonicalSkill)),
+		Details: map[string]string{
+			"requested_skill": strings.TrimSpace(route.Subject),
+		},
+	}
+
 	log, err := m.stateStore.LoadReplayLog(service)
 	if err != nil {
-		return err
+		return cli.RuntimeSkillResult{}, err
+	}
+	log.Events = append(log.Events, event)
+	if err := m.stateStore.SaveReplayLog(service, log); err != nil {
+		return cli.RuntimeSkillResult{}, err
 	}
 
-	effective := checkpointSkillState(checkpoint)
-	for _, event := range log.Events {
-		if event.Type != "skill_install" || strings.TrimSpace(event.Skill) == "" {
-			continue
-		}
-		effective[event.Skill] = event.PackageDigest
+	if err := m.installSkillFromGatewayState(ctx, service, event); err != nil {
+		_ = m.stateStore.RemoveReplayEvent(service, eventID)
+		return cli.RuntimeSkillResult{}, err
 	}
 
-	changed := false
-	for _, skill := range skills {
-		if effective[skill.Name] == skill.Digest {
-			continue
-		}
-
-		deploymentID := newGatewayID("deploy")
-		eventID := newGatewayID("event")
-		stagedDir, err := m.stateStore.StageReplayPackage(service, eventID, skill.SourceDir)
-		if err != nil {
-			return err
-		}
-
-		event := deploystate.ReplayEvent{
-			EventID:       eventID,
-			DeploymentID:  deploymentID,
-			Timestamp:     time.Now().UTC().Format(time.RFC3339),
-			Runtime:       service,
-			Type:          "skill_install",
-			Skill:         skill.Name,
-			PackageDir:    stagedDir,
-			PackageDigest: skill.Digest,
-			ContainerPath: filepath.ToSlash(filepath.Join("/home/node/.openclaw/skills", skill.Name)),
-		}
-		log.Events = append(log.Events, event)
-		changed = true
-
-		record := deploystate.DeploymentRecord{
-			DeploymentID:    deploymentID,
-			Timestamp:       event.Timestamp,
-			Actor:           deploymentActor(route),
-			Target:          service + "/skill/" + skill.Name,
-			ArtifactVersion: skill.Digest,
-			PreviousVersion: effective[skill.Name],
-			Result:          "recorded",
-			Operation:       "runtime_skill_deploy",
-			Runtime:         service,
-			Details: map[string]string{
-				"event_id":    eventID,
-				"package_dir": stagedDir,
-			},
-		}
-		if err := m.stateStore.AppendDeployment(record); err != nil {
-			return err
-		}
-		effective[skill.Name] = skill.Digest
+	record := deploystate.DeploymentRecord{
+		DeploymentID:    deploymentID,
+		Timestamp:       event.Timestamp,
+		Actor:           deploymentActor(route),
+		Target:          service + "/skill/" + canonicalSkill,
+		ArtifactVersion: skill.Digest,
+		PreviousVersion: previousDigest,
+		Result:          "success",
+		Operation:       "runtime_skill_deploy",
+		Runtime:         service,
+		Details: map[string]string{
+			"event_id":        eventID,
+			"package_dir":     stagedDir,
+			"requested_skill": strings.TrimSpace(route.Subject),
+		},
+	}
+	if err := m.stateStore.AppendDeployment(record); err != nil {
+		return cli.RuntimeSkillResult{}, err
 	}
 
-	if !changed {
-		return nil
+	return cli.RuntimeSkillResult{
+		OK:             true,
+		Route:          route,
+		Runtime:        service,
+		Skill:          strings.TrimSpace(route.Subject),
+		CanonicalSkill: canonicalSkill,
+		Action:         route.Action,
+		DeploymentID:   deploymentID,
+		EventID:        eventID,
+		PackageDir:     stagedDir,
+		ReplayCount:    len(log.Events),
+	}, nil
+}
+
+func (m *Manager) RuntimeSkillRollback(ctx context.Context, route *cli.Route) (cli.RuntimeSkillResult, error) {
+	service := runtimeService(route)
+	if !isRuntimeService(service) {
+		return cli.RuntimeSkillResult{}, fmt.Errorf("skill rollback is only supported for runtime services")
 	}
-	return m.stateStore.SaveReplayLog(service, log)
+
+	canonicalSkill := canonicalRuntimeSkillName(route.Subject)
+	log, err := m.stateStore.LoadReplayLog(service)
+	if err != nil {
+		return cli.RuntimeSkillResult{}, err
+	}
+
+	index, event, ok := latestReplaySkillEvent(log, canonicalSkill)
+	if !ok {
+		return cli.RuntimeSkillResult{}, fmt.Errorf("no replay deployment found for skill %q in %s", canonicalSkill, service)
+	}
+
+	updated := log
+	updated.Events = append(append([]deploystate.ReplayEvent(nil), log.Events[:index]...), log.Events[index+1:]...)
+	if err := m.stateStore.SaveReplayLog(service, updated); err != nil {
+		return cli.RuntimeSkillResult{}, err
+	}
+
+	reloadRoute := &cli.Route{
+		Resource:    route.Resource,
+		Kind:        cli.KindRuntimeAction,
+		Action:      "reload",
+		Environment: route.Environment,
+		Runtime:     service,
+	}
+	if _, err := m.DeployService(ctx, reloadRoute, service); err != nil {
+		_ = m.stateStore.SaveReplayLog(service, log)
+		return cli.RuntimeSkillResult{}, err
+	}
+
+	deploymentID := newGatewayID("deploy")
+	record := deploystate.DeploymentRecord{
+		DeploymentID:    deploymentID,
+		Timestamp:       time.Now().UTC().Format(time.RFC3339),
+		Actor:           deploymentActor(route),
+		Target:          service + "/skill/" + event.Skill,
+		ArtifactVersion: "",
+		PreviousVersion: event.PackageDigest,
+		Result:          "success",
+		Operation:       "runtime_skill_rollback",
+		Runtime:         service,
+		Details: map[string]string{
+			"event_id":        event.EventID,
+			"requested_skill": strings.TrimSpace(route.Subject),
+		},
+	}
+	if err := m.stateStore.AppendDeployment(record); err != nil {
+		return cli.RuntimeSkillResult{}, err
+	}
+
+	return cli.RuntimeSkillResult{
+		OK:             true,
+		Route:          route,
+		Runtime:        service,
+		Skill:          strings.TrimSpace(route.Subject),
+		CanonicalSkill: event.Skill,
+		Action:         route.Action,
+		DeploymentID:   deploymentID,
+		EventID:        event.EventID,
+		ReplayCount:    len(updated.Events),
+	}, nil
 }
 
 func (m *Manager) replayRuntimeDeployHistory(ctx context.Context, route *cli.Route, service string) error {
@@ -212,11 +287,83 @@ func (m *Manager) installSkillFromGatewayState(ctx context.Context, service stri
 	return nil
 }
 
-func (m *Manager) RuntimeCheckpoint(ctx context.Context, route *cli.Route) (cli.RuntimeCheckpointResult, error) {
+func runtimeService(route *cli.Route) string {
+	if route == nil {
+		return ""
+	}
 	service := canonicalServiceName(route.Resource)
 	if strings.TrimSpace(route.Runtime) != "" {
 		service = canonicalServiceName(route.Runtime)
 	}
+	return service
+}
+
+func canonicalRuntimeSkillName(name string) string {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if canonical, ok := runtimeSkillAliases[normalized]; ok {
+		return canonical
+	}
+	return normalized
+}
+
+func latestReplaySkillEvent(log deploystate.ReplayLog, skill string) (int, deploystate.ReplayEvent, bool) {
+	for index := len(log.Events) - 1; index >= 0; index-- {
+		event := log.Events[index]
+		if event.Type != "skill_install" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(event.Skill), strings.TrimSpace(skill)) {
+			return index, event, true
+		}
+	}
+	return -1, deploystate.ReplayEvent{}, false
+}
+
+func (m *Manager) effectiveSkillDigest(service, skill string) (string, error) {
+	checkpoint, _, err := m.stateStore.LoadCheckpoint(service)
+	if err != nil {
+		return "", err
+	}
+	state := checkpointSkillState(checkpoint)
+	logSkills, err := m.stateStore.ReplaySkillState(service)
+	if err != nil {
+		return "", err
+	}
+	for name, replaySkill := range logSkills {
+		state[name] = replaySkill.Digest
+	}
+	return state[skill], nil
+}
+
+func (m *Manager) resolveDeployableSkill(requested string) (deployableSkill, string, error) {
+	skills, err := m.discoverPureSkills()
+	if err != nil {
+		return deployableSkill{}, "", err
+	}
+
+	canonical := canonicalRuntimeSkillName(requested)
+	for _, skill := range skills {
+		if strings.EqualFold(skill.Name, canonical) {
+			return skill, skill.Name, nil
+		}
+	}
+
+	names := make([]string, 0, len(skills))
+	for _, skill := range skills {
+		names = append(names, skill.Name)
+	}
+	sort.Strings(names)
+	if strings.TrimSpace(requested) == "" {
+		return deployableSkill{}, "", fmt.Errorf("missing skill name")
+	}
+	if len(names) == 0 {
+		return deployableSkill{}, "", fmt.Errorf("no deployable skills are available in %s", m.config.SkillsRepoRoot())
+	}
+	return deployableSkill{}, "", fmt.Errorf("unknown deployable skill %q (available: %s)", strings.TrimSpace(requested), strings.Join(names, ", "))
+}
+
+func (m *Manager) RuntimeCheckpoint(ctx context.Context, route *cli.Route) (cli.RuntimeCheckpointResult, error) {
+	service := runtimeService(route)
 	if !isRuntimeService(service) {
 		return cli.RuntimeCheckpointResult{}, fmt.Errorf("checkpoint is only supported for runtime services")
 	}

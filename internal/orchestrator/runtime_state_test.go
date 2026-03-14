@@ -110,17 +110,34 @@ func (r *simulatedRuntimeRunner) handleCopy(args []string) (command.Result, erro
 	}
 }
 
-func TestDeployServiceRecordsReplayStateAndReplaysFromGatewayHistory(t *testing.T) {
+func TestRuntimeSkillDeployRecordsReplayStateAndReplaysOnRedeploy(t *testing.T) {
 	t.Parallel()
 
 	manager, runner, store, runtimeRoot, skillsRoot := newRuntimeTestManager(t)
 
-	route := &cli.Route{Resource: "dev", Kind: cli.KindRuntimeAction, Action: "reload", Environment: "dev", Runtime: "openclaw-dev"}
-	if _, err := manager.DeployService(context.Background(), route, "dev"); err != nil {
-		t.Fatalf("DeployService() error = %v", err)
+	reloadRoute := &cli.Route{Resource: "dev", Kind: cli.KindRuntimeAction, Action: "reload", Environment: "dev", Runtime: "openclaw-dev"}
+	if _, err := manager.DeployService(context.Background(), reloadRoute, "dev"); err != nil {
+		t.Fatalf("initial DeployService() error = %v", err)
 	}
 
 	log, err := store.LoadReplayLog("openclaw-dev")
+	if err != nil {
+		t.Fatalf("LoadReplayLog() error = %v", err)
+	}
+	if len(log.Events) != 0 {
+		t.Fatalf("initial replay log = %#v, want empty", log.Events)
+	}
+
+	deployRoute := &cli.Route{Resource: "dev", Kind: cli.KindRuntimeSkill, Action: "deploy", Environment: "dev", Runtime: "openclaw-dev", Subject: "together"}
+	result, err := manager.RuntimeSkillDeploy(context.Background(), deployRoute)
+	if err != nil {
+		t.Fatalf("RuntimeSkillDeploy() error = %v", err)
+	}
+	if !result.OK || result.CanonicalSkill != "together-escalation" {
+		t.Fatalf("deploy result = %#v, want successful together-escalation deploy", result)
+	}
+
+	log, err = store.LoadReplayLog("openclaw-dev")
 	if err != nil {
 		t.Fatalf("LoadReplayLog() error = %v", err)
 	}
@@ -131,17 +148,17 @@ func TestDeployServiceRecordsReplayStateAndReplaysFromGatewayHistory(t *testing.
 		t.Fatalf("expected together skill in runtime state: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(runtimeRoot, "skills", "semantic-router", "SKILL.md")); !os.IsNotExist(err) {
-		t.Fatalf("semantic-router should not be auto-staged, stat err = %v", err)
+		t.Fatalf("semantic-router should not be staged, stat err = %v", err)
 	}
 
 	if err := os.RemoveAll(skillsRoot); err != nil {
 		t.Fatalf("remove skills repo: %v", err)
 	}
-	if _, err := manager.DeployService(context.Background(), route, "dev"); err != nil {
+	if _, err := manager.DeployService(context.Background(), reloadRoute, "dev"); err != nil {
 		t.Fatalf("second DeployService() error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(runtimeRoot, "skills", "together-escalation", "SKILL.md")); err != nil {
-		t.Fatalf("expected together skill after replay-only deploy: %v", err)
+		t.Fatalf("expected together skill after replay-only redeploy: %v", err)
 	}
 
 	foundReplayCopy := false
@@ -167,13 +184,61 @@ func TestDeployServiceRecordsReplayStateAndReplaysFromGatewayHistory(t *testing.
 	}
 }
 
+func TestRuntimeSkillRollbackRemovesReplayAndRestoresBaseline(t *testing.T) {
+	t.Parallel()
+
+	manager, _, store, runtimeRoot, _ := newRuntimeTestManager(t)
+
+	reloadRoute := &cli.Route{Resource: "dev", Kind: cli.KindRuntimeAction, Action: "reload", Environment: "dev", Runtime: "openclaw-dev"}
+	if _, err := manager.DeployService(context.Background(), reloadRoute, "dev"); err != nil {
+		t.Fatalf("initial DeployService() error = %v", err)
+	}
+
+	deployRoute := &cli.Route{Resource: "dev", Kind: cli.KindRuntimeSkill, Action: "deploy", Environment: "dev", Runtime: "openclaw-dev", Subject: "together"}
+	if _, err := manager.RuntimeSkillDeploy(context.Background(), deployRoute); err != nil {
+		t.Fatalf("RuntimeSkillDeploy() error = %v", err)
+	}
+
+	rollbackRoute := &cli.Route{Resource: "dev", Kind: cli.KindRuntimeSkill, Action: "rollback", Environment: "dev", Runtime: "openclaw-dev", Subject: "together"}
+	result, err := manager.RuntimeSkillRollback(context.Background(), rollbackRoute)
+	if err != nil {
+		t.Fatalf("RuntimeSkillRollback() error = %v", err)
+	}
+	if !result.OK || result.CanonicalSkill != "together-escalation" {
+		t.Fatalf("rollback result = %#v, want successful together-escalation rollback", result)
+	}
+
+	log, err := store.LoadReplayLog("openclaw-dev")
+	if err != nil {
+		t.Fatalf("LoadReplayLog() error = %v", err)
+	}
+	if len(log.Events) != 0 {
+		t.Fatalf("replay log = %#v, want empty after rollback", log.Events)
+	}
+	if _, err := os.Stat(filepath.Join(runtimeRoot, "skills", "together-escalation", "SKILL.md")); !os.IsNotExist(err) {
+		t.Fatalf("expected together skill to be absent after rollback, stat err = %v", err)
+	}
+
+	history, err := store.ReadDeploymentHistory()
+	if err != nil {
+		t.Fatalf("ReadDeploymentHistory() error = %v", err)
+	}
+	if len(history) < 4 {
+		t.Fatalf("deployment history len = %d, want at least 4", len(history))
+	}
+}
+
 func TestRuntimeCheckpointPromotesBaselineAndClearsReplay(t *testing.T) {
 	t.Parallel()
 
 	manager, runner, store, runtimeRoot, skillsRoot := newRuntimeTestManager(t)
-	route := &cli.Route{Resource: "dev", Kind: cli.KindRuntimeAction, Action: "reload", Environment: "dev", Runtime: "openclaw-dev"}
-	if _, err := manager.DeployService(context.Background(), route, "dev"); err != nil {
+	reloadRoute := &cli.Route{Resource: "dev", Kind: cli.KindRuntimeAction, Action: "reload", Environment: "dev", Runtime: "openclaw-dev"}
+	if _, err := manager.DeployService(context.Background(), reloadRoute, "dev"); err != nil {
 		t.Fatalf("DeployService() error = %v", err)
+	}
+	deployRoute := &cli.Route{Resource: "dev", Kind: cli.KindRuntimeSkill, Action: "deploy", Environment: "dev", Runtime: "openclaw-dev", Subject: "together"}
+	if _, err := manager.RuntimeSkillDeploy(context.Background(), deployRoute); err != nil {
+		t.Fatalf("RuntimeSkillDeploy() error = %v", err)
 	}
 
 	checkpointRoute := &cli.Route{Resource: "dev", Kind: cli.KindRuntimeAction, Action: "checkpoint", Environment: "dev", Runtime: "openclaw-dev"}
@@ -208,7 +273,7 @@ func TestRuntimeCheckpointPromotesBaselineAndClearsReplay(t *testing.T) {
 		t.Fatalf("remove skills repo: %v", err)
 	}
 	runner.commands = nil
-	if _, err := manager.DeployService(context.Background(), route, "dev"); err != nil {
+	if _, err := manager.DeployService(context.Background(), reloadRoute, "dev"); err != nil {
 		t.Fatalf("post-checkpoint DeployService() error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(runtimeRoot, "skills", "together-escalation", "SKILL.md")); err != nil {

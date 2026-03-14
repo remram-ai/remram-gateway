@@ -59,6 +59,10 @@ func (c *HTTPClient) Execute(route *cli.Route, secretValue string) ([]byte, erro
 		return c.post("/runtime/reload", cli.RouteRequest{Route: route})
 	case route.Kind == cli.KindRuntimeAction && route.Action == "checkpoint":
 		return c.post("/runtime/checkpoint", cli.RouteRequest{Route: route})
+	case route.Kind == cli.KindRuntimeSkill && route.Action == "deploy":
+		return c.post("/runtime/skill/deploy", cli.RouteRequest{Route: route})
+	case route.Kind == cli.KindRuntimeSkill && route.Action == "rollback":
+		return c.post("/runtime/skill/rollback", cli.RouteRequest{Route: route})
 	case route.Kind == cli.KindRuntimeNative:
 		return c.post("/runtime/openclaw", cli.RouteRequest{Route: route})
 	case route.Kind == cli.KindServiceNative:

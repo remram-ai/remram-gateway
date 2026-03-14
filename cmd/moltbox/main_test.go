@@ -202,6 +202,56 @@ func TestCLIForwardsToGateway(t *testing.T) {
 			},
 		},
 		{
+			name:       "runtime skill deploy",
+			args:       []string{"dev", "skill", "deploy", "together"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/runtime/skill/deploy",
+			wantCode:   cli.ExitOK,
+			handler: func(t *testing.T, writer http.ResponseWriter, request *http.Request) {
+				t.Helper()
+				var payload cli.RouteRequest
+				if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				_ = json.NewEncoder(writer).Encode(cli.RuntimeSkillResult{
+					OK:             true,
+					Route:          payload.Route,
+					Runtime:        "openclaw-dev",
+					Skill:          "together",
+					CanonicalSkill: "together-escalation",
+					Action:         "deploy",
+					DeploymentID:   "deploy-123",
+					EventID:        "event-123",
+					PackageDir:     "/srv/moltbox-state/deploy/runtime/openclaw-dev/packages/event-123",
+					ReplayCount:    1,
+				})
+			},
+		},
+		{
+			name:       "runtime skill rollback",
+			args:       []string{"dev", "skill", "rollback", "together"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/runtime/skill/rollback",
+			wantCode:   cli.ExitOK,
+			handler: func(t *testing.T, writer http.ResponseWriter, request *http.Request) {
+				t.Helper()
+				var payload cli.RouteRequest
+				if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				_ = json.NewEncoder(writer).Encode(cli.RuntimeSkillResult{
+					OK:             true,
+					Route:          payload.Route,
+					Runtime:        "openclaw-dev",
+					Skill:          "together",
+					CanonicalSkill: "together-escalation",
+					Action:         "rollback",
+					DeploymentID:   "deploy-rollback-123",
+					EventID:        "event-123",
+				})
+			},
+		},
+		{
 			name:       "runtime openclaw passthrough",
 			args:       []string{"dev", "openclaw", "plugins", "list"},
 			wantMethod: http.MethodPost,
