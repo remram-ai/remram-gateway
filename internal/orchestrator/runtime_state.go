@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	stdruntime "runtime"
 	"sort"
 	"strings"
 	"time"
@@ -52,11 +53,13 @@ func (m *Manager) restoreRuntimeBaseline(service string) error {
 		return fmt.Errorf("create runtime state dir for %s: %w", service, err)
 	}
 
-	if !ok || strings.TrimSpace(checkpoint.SnapshotDir) == "" {
-		return nil
+	if ok && strings.TrimSpace(checkpoint.SnapshotDir) != "" {
+		if err := copyTree(checkpoint.SnapshotDir, destination); err != nil {
+			return fmt.Errorf("restore checkpoint snapshot for %s: %w", service, err)
+		}
 	}
-	if err := copyTree(checkpoint.SnapshotDir, destination); err != nil {
-		return fmt.Errorf("restore checkpoint snapshot for %s: %w", service, err)
+	if err := ensureRuntimeStateOwnership(destination); err != nil {
+		return fmt.Errorf("set runtime state ownership for %s: %w", service, err)
 	}
 	return nil
 }
@@ -304,6 +307,18 @@ func canonicalRuntimeSkillName(name string) string {
 		return canonical
 	}
 	return normalized
+}
+
+func ensureRuntimeStateOwnership(root string) error {
+	if stdruntime.GOOS == "windows" {
+		return nil
+	}
+	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		return os.Chown(path, 1000, 1000)
+	})
 }
 
 func latestReplaySkillEvent(log deploystate.ReplayLog, skill string) (int, deploystate.ReplayEvent, bool) {
