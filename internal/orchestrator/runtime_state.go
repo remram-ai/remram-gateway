@@ -1612,10 +1612,9 @@ func (m *Manager) installRuntimePluginSpec(ctx context.Context, service, install
 }
 
 func (m *Manager) stagePluginSourceInRuntime(ctx context.Context, service, token, hostSourcePath string) (string, func(), error) {
-	// OpenClaw installs plugins into ~/.openclaw/extensions/<id>; staging the
-	// source inside the runtime lets replay re-run the documented plugin install
-	// command for both npm specs and local packages.
-	stagingRoot := filepath.ToSlash(filepath.Join("/home/node/.openclaw/.moltbox-plugin-source", token))
+	// Stage plugin source under /tmp because the runtime state bind mount may not
+	// allow creating new temporary subdirectories reliably inside ~/.openclaw.
+	stagingRoot := filepath.ToSlash(filepath.Join("/tmp/moltbox-plugin-source", token))
 	prepareCommand := fmt.Sprintf("rm -rf %s && mkdir -p %s", shellQuote(stagingRoot), shellQuote(stagingRoot))
 	prepareResult, err := m.runner.Run(ctx, "", "docker", "exec", "-u", "0", service, "sh", "-lc", prepareCommand)
 	if err != nil {

@@ -634,7 +634,7 @@ func TestRuntimePluginInstallRecordsReplayStateAndReplaysOnRedeploy(t *testing.T
 	foundRestart := false
 	for _, command := range runner.commands {
 		text := strings.Join(command, " ")
-		if strings.Contains(text, "openclaw plugins install") && strings.Contains(text, "/home/node/.openclaw/.moltbox-plugin-source/") {
+		if strings.Contains(text, "openclaw plugins install") && strings.Contains(text, "/tmp/moltbox-plugin-source/") {
 			foundStagedInstall = true
 		}
 		if text == "docker restart openclaw-dev" {
@@ -963,7 +963,7 @@ func newRuntimeTestManager(t *testing.T) (*Manager, *simulatedRuntimeRunner, *de
 }
 
 func runtimePluginHostPath(runtimeRoot, spec string) string {
-	if strings.HasPrefix(filepath.ToSlash(spec), "/home/node/.openclaw/") {
+	if strings.HasPrefix(filepath.ToSlash(spec), "/") {
 		return runtimeHostPath(runtimeRoot, spec)
 	}
 	if _, err := os.Stat(spec); err == nil {
