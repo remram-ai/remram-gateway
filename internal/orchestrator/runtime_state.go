@@ -1340,13 +1340,13 @@ func (m *Manager) selectedRuntimeImage(service string) string {
 	return strings.TrimSpace(checkpoint.Image)
 }
 
-func (m *Manager) recordServiceDeployment(route *cli.Route, service, result string) error {
+func (m *Manager) recordServiceDeployment(route *cli.Route, service string, containers []cli.ServiceContainerStatus, result string) error {
 	record := deploystate.DeploymentRecord{
 		DeploymentID:    newGatewayID("deploy"),
 		Timestamp:       time.Now().UTC().Format(time.RFC3339),
 		Actor:           deploymentActor(route),
 		Target:          service,
-		ArtifactVersion: serviceArtifactVersion(service, m.selectedRuntimeImage(service)),
+		ArtifactVersion: m.currentServiceArtifactVersion(service, containers),
 		Result:          result,
 		Operation:       "service_deploy",
 		Runtime: func() string {
@@ -1357,6 +1357,21 @@ func (m *Manager) recordServiceDeployment(route *cli.Route, service, result stri
 		}(),
 	}
 	return m.stateStore.AppendDeployment(record)
+}
+
+func (m *Manager) currentServiceArtifactVersion(service string, containers []cli.ServiceContainerStatus) string {
+	if isRuntimeService(service) {
+		return serviceArtifactVersion(service, m.selectedRuntimeImage(service))
+	}
+	for _, container := range containers {
+		if !container.Present {
+			continue
+		}
+		if image := strings.TrimSpace(container.Image); image != "" {
+			return image
+		}
+	}
+	return serviceArtifactVersion(service, "")
 }
 
 func (m *Manager) discoverPureSkills() ([]deployableSkill, error) {
@@ -2302,10 +2317,10 @@ func checkpointPluginState(checkpoint deploystate.CheckpointMetadata) map[string
 }
 
 func serviceArtifactVersion(service, image string) string {
+	if trimmed := strings.TrimSpace(image); trimmed != "" {
+		return trimmed
+	}
 	if isRuntimeService(service) {
-		if strings.TrimSpace(image) != "" {
-			return image
-		}
 		return defaultRuntimeImage
 	}
 	return service + ":latest"

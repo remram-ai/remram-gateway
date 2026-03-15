@@ -341,9 +341,10 @@ func TestDeployServiceRunsComposeAndInspectsContainers(t *testing.T) {
 	runtimeRoot := filepath.Join(root, "runtime-repo")
 	stateRoot := filepath.Join(root, "state")
 
-	mustWriteFile(t, filepath.Join(servicesRoot, "services", "gateway", "service.yaml"), "compose_project: gateway\ncontainer_names:\n  - gateway\nbuild_on_deploy: true\nskip_pull: true\n")
-	mustWriteFile(t, filepath.Join(servicesRoot, "services", "gateway", "compose.yml.template"), "services:\n  gateway:\n    container_name: \"{{ container_name }}\"\n")
-	mustWriteFile(t, filepath.Join(runtimeRoot, "gateway", "config.yaml"), "gateway:\n  host: 0.0.0.0\n  port: 7460\n")
+	mustWriteFile(t, filepath.Join(servicesRoot, "services", "opensearch", "service.yaml"), "compose_project: opensearch\ncontainer_names:\n  - opensearch\nbuild_on_deploy: true\nskip_pull: true\n")
+	mustWriteFile(t, filepath.Join(servicesRoot, "services", "opensearch", "compose.yml.template"), "services:\n  opensearch:\n    container_name: \"{{ container_name }}\"\n")
+	mustWriteFile(t, filepath.Join(runtimeRoot, "opensearch", "opensearch.yml"), "cluster.name: test\n")
+	mustWriteFile(t, filepath.Join(runtimeRoot, "opensearch", "container.env"), "OPENSEARCH_JAVA_OPTS=-Xms256m -Xmx256m\n")
 
 	runner := &fakeRunner{
 		results: []command.Result{
@@ -352,8 +353,8 @@ func TestDeployServiceRunsComposeAndInspectsContainers(t *testing.T) {
 		},
 	}
 	containerInfo := docker.ContainerInfo{}
-	containerInfo.Name = "/gateway"
-	containerInfo.Config.Image = "moltbox-gateway:latest"
+	containerInfo.Name = "/opensearch"
+	containerInfo.Config.Image = "moltbox-opensearch:local"
 	containerInfo.State.Status = "running"
 	containerInfo.State.Running = true
 	containerInfo.State.Health = &struct {
@@ -373,11 +374,11 @@ func TestDeployServiceRunsComposeAndInspectsContainers(t *testing.T) {
 		Gateway: appconfig.GatewayConfig{Host: "0.0.0.0", Port: 7460},
 	}, fakeInspector{
 		containers: map[string]docker.ContainerInfo{
-			"gateway": containerInfo,
+			"opensearch": containerInfo,
 		},
 	}, runner, nil)
 
-	result, err := manager.DeployService(context.Background(), &cli.Route{Resource: "gateway", Kind: cli.KindGatewayService, Action: "deploy", Subject: "gateway"}, "gateway")
+	result, err := manager.DeployService(context.Background(), &cli.Route{Resource: "gateway", Kind: cli.KindGatewayService, Action: "deploy", Subject: "opensearch"}, "opensearch")
 	if err != nil {
 		t.Fatalf("DeployService() error = %v", err)
 	}
@@ -389,6 +390,34 @@ func TestDeployServiceRunsComposeAndInspectsContainers(t *testing.T) {
 	}
 	if got := strings.Join(runner.commands[1], " "); !strings.Contains(got, "compose") || !strings.Contains(got, "--build") || !strings.Contains(got, "--force-recreate") {
 		t.Fatalf("compose up command = %q, want compose build command", got)
+	}
+
+	store := deploystate.New(stateRoot)
+	history, err := store.ReadDeploymentHistory()
+	if err != nil {
+		t.Fatalf("ReadDeploymentHistory() error = %v", err)
+	}
+	if len(history) != 1 || history[0].ArtifactVersion != "moltbox-opensearch:local" {
+		t.Fatalf("deployment history = %#v, want inspected service image recorded", history)
+	}
+}
+
+func TestDeployServiceRejectsGatewaySelfMutation(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(appconfig.Config{}, fakeInspector{}, &fakeRunner{}, nil)
+
+	_, err := manager.DeployService(context.Background(), &cli.Route{
+		Resource: "gateway",
+		Kind:     cli.KindGatewayService,
+		Action:   "deploy",
+		Subject:  "gateway",
+	}, "gateway")
+	if err == nil {
+		t.Fatal("expected gateway self-deploy to be rejected")
+	}
+	if !strings.Contains(err.Error(), "use 'moltbox gateway update'") {
+		t.Fatalf("error = %v, want update guidance", err)
 	}
 }
 
@@ -411,7 +440,7 @@ func TestRestartServiceUsesDeployLifecycle(t *testing.T) {
 	}
 	containerInfo := docker.ContainerInfo{}
 	containerInfo.Name = "/ollama"
-	containerInfo.Config.Image = "ollama/ollama:latest"
+	containerInfo.Config.Image = "ollama/ollama:0.6.0"
 	containerInfo.State.Status = "running"
 	containerInfo.State.Running = true
 	containerInfo.State.Health = &struct {
@@ -453,6 +482,15 @@ func TestRestartServiceUsesDeployLifecycle(t *testing.T) {
 	}
 	if len(result.Containers) != 1 || result.Containers[0].Health != "healthy" {
 		t.Fatalf("restart containers = %#v, want healthy ollama container", result.Containers)
+	}
+
+	store := deploystate.New(stateRoot)
+	history, err := store.ReadDeploymentHistory()
+	if err != nil {
+		t.Fatalf("ReadDeploymentHistory() error = %v", err)
+	}
+	if len(history) != 1 || history[0].ArtifactVersion != "ollama/ollama:0.6.0" {
+		t.Fatalf("deployment history = %#v, want restarted service image recorded", history)
 	}
 }
 
@@ -508,7 +546,7 @@ func TestGatewayUpdateStartsHelperContainer(t *testing.T) {
 		t.Fatalf("expected network inspect/create + helper run, got %d commands", len(runner.commands))
 	}
 	got := strings.Join(runner.commands[2], " ")
-	if !strings.Contains(got, "run -d --rm") || !strings.Contains(got, "moltbox-gateway:latest") || !strings.Contains(got, "golang:1.23-bookworm") || !strings.Contains(got, "/usr/local/go/bin/go build -buildvcs=false -o /out/moltbox") || !strings.Contains(got, "remote get-url origin") || !strings.Contains(got, "cp \"$STAGING_ROOT/moltbox\" \"$CLI_PATH\"") || !strings.Contains(got, "cp \"$STAGING_ROOT/moltbox\" \"$SHARED_CLI_PATH\"") || !strings.Contains(got, "cp \"$CONFIG_SOURCE\" \"$SYSTEM_CONFIG_PATH\"") || !strings.Contains(got, "chown -R \"$CLI_OWNER\" \"$SECRETS_ROOT\"") || !strings.Contains(got, "moltbox-cli-wrapper.sh") || !strings.Contains(got, "CLI_WRAPPER_PATH") || !strings.Contains(got, "moltbox-bootstrap-wrapper.sh") || !strings.Contains(got, "BOOTSTRAP_WRAPPER_PATH") || !strings.Contains(got, "/usr/local/bin:/usr/local/bin") || !strings.Contains(got, "/etc/moltbox:/etc/moltbox") || !strings.Contains(got, "/var/lib/moltbox:/var/lib/moltbox") || !strings.Contains(got, `HISTORY_PATH='/var/lib/moltbox/history.jsonl'`) || !strings.Contains(got, `sha256sum "$STAGING_ROOT/gateway"`) {
+	if !strings.Contains(got, "run -d --rm") || !strings.Contains(got, "moltbox-gateway:latest") || !strings.Contains(got, "golang:1.23-bookworm") || !strings.Contains(got, "/usr/local/go/bin/go build -buildvcs=false -o /out/moltbox") || !strings.Contains(got, `git config --global --add safe.directory "$REPO"`) || !strings.Contains(got, "remote get-url origin") || !strings.Contains(got, `gateway update requires a git checkout at $REPO`) || !strings.Contains(got, "cp \"$STAGING_ROOT/moltbox\" \"$CLI_PATH\"") || !strings.Contains(got, "cp \"$STAGING_ROOT/moltbox\" \"$SHARED_CLI_PATH\"") || !strings.Contains(got, "cp \"$CONFIG_SOURCE\" \"$SYSTEM_CONFIG_PATH\"") || !strings.Contains(got, "chown -R \"$CLI_OWNER\" \"$SECRETS_ROOT\"") || !strings.Contains(got, "moltbox-cli-wrapper.sh") || !strings.Contains(got, "CLI_WRAPPER_PATH") || !strings.Contains(got, "moltbox-bootstrap-wrapper.sh") || !strings.Contains(got, "BOOTSTRAP_WRAPPER_PATH") || !strings.Contains(got, "/usr/local/bin:/usr/local/bin") || !strings.Contains(got, "/etc/moltbox:/etc/moltbox") || !strings.Contains(got, "/var/lib/moltbox:/var/lib/moltbox") || !strings.Contains(got, `HISTORY_PATH='/var/lib/moltbox/history.jsonl'`) || !strings.Contains(got, `sha256sum "$STAGING_ROOT/gateway"`) {
 		t.Fatalf("gateway update helper command = %q", got)
 	}
 

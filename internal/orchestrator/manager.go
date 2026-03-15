@@ -67,6 +67,14 @@ func NewManager(cfg config.Config, inspector ContainerInspector, runner command.
 
 func (m *Manager) DeployService(ctx context.Context, route *cli.Route, service string) (cli.ServiceDeployResult, error) {
 	canonicalService := canonicalServiceName(service)
+	if canonicalService == "gateway" {
+		action := "deploy"
+		if route != nil && strings.TrimSpace(route.Action) != "" {
+			action = strings.TrimSpace(route.Action)
+		}
+		return cli.ServiceDeployResult{}, fmt.Errorf("gateway service %s gateway is not supported; use 'moltbox gateway update'", action)
+	}
+
 	definition, err := m.LoadServiceDefinition(canonicalService)
 	if err != nil {
 		return cli.ServiceDeployResult{}, err
@@ -116,7 +124,7 @@ func (m *Manager) DeployService(ctx context.Context, route *cli.Route, service s
 		}
 	}
 
-	if err := m.recordServiceDeployment(route, canonicalService, "success"); err != nil {
+	if err := m.recordServiceDeployment(route, canonicalService, containers, "success"); err != nil {
 		return cli.ServiceDeployResult{}, err
 	}
 
@@ -288,13 +296,13 @@ func buildGatewayUpdateScript(repoRoot, stagingRoot, cliPath, cliConfigPath, con
 		`mkdir -p "$STAGING_ROOT" "$(dirname "$CLI_PATH")" "$(dirname "$CLI_CONFIG_PATH")" "$(dirname "$SYSTEM_CONFIG_PATH")"`,
 		`mkdir -p "$SECRETS_ROOT"`,
 		`mkdir -p "$(dirname "$HISTORY_PATH")"`,
-		`OLD_VERSION=""`,
-		`if [ -d "$REPO/.git" ] && git -C "$REPO" rev-parse HEAD >/dev/null 2>&1; then OLD_VERSION="$(git -C "$REPO" rev-parse HEAD)"; fi`,
+		`command -v git >/dev/null 2>&1 || { echo "gateway update requires git in the helper container"; exit 1; }`,
+		`if [ ! -d "$REPO/.git" ] && [ ! -f "$REPO/.git" ]; then echo "gateway update requires a git checkout at $REPO"; exit 1; fi`,
+		`git config --global --add safe.directory "$REPO"`,
+		`OLD_VERSION="$(git -C "$REPO" rev-parse HEAD)"`,
 		`SOURCE="$REPO"`,
-		`if [ -d "$REPO/.git" ] && git -C "$REPO" remote get-url origin >/dev/null 2>&1; then SOURCE="$(git -C "$REPO" remote get-url origin)"; fi`,
-		`if [ -d "$REPO/.git" ] && git -C "$REPO" remote get-url origin >/dev/null 2>&1; then git -C "$REPO" fetch --all --tags --prune && git -C "$REPO" pull --ff-only; fi`,
-		`NEW_VERSION="$OLD_VERSION"`,
-		`if [ -d "$REPO/.git" ] && git -C "$REPO" rev-parse HEAD >/dev/null 2>&1; then NEW_VERSION="$(git -C "$REPO" rev-parse HEAD)"; fi`,
+		`if git -C "$REPO" remote get-url origin >/dev/null 2>&1; then SOURCE="$(git -C "$REPO" remote get-url origin)"; git -C "$REPO" fetch --all --tags --prune; git -C "$REPO" pull --ff-only; fi`,
+		`NEW_VERSION="$(git -C "$REPO" rev-parse HEAD)"`,
 		`docker run --rm -v "$REPO:/src" -v "$STAGING_ROOT:/out" -w /src golang:1.23-bookworm sh -lc 'set -eu; /usr/local/go/bin/go build -buildvcs=false -o /out/moltbox ./cmd/moltbox && /usr/local/go/bin/go build -buildvcs=false -o /out/gateway ./cmd/gateway'`,
 		`CHECKSUM="$(sha256sum "$STAGING_ROOT/gateway" | awk '{print $1}')"`,
 		`cp "$STAGING_ROOT/moltbox" "$CLI_PATH"`,
