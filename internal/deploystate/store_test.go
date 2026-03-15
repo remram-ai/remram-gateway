@@ -136,3 +136,43 @@ func TestStoreWritesGatewayStateWithoutLeavingTemps(t *testing.T) {
 		t.Fatalf("Walk() error = %v", err)
 	}
 }
+
+func TestReplayPluginStateAppliesRemoveTombstones(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	store := New(root)
+
+	if err := store.SaveReplayLog("openclaw-dev", ReplayLog{
+		Runtime: "openclaw-dev",
+		Events: []ReplayEvent{
+			{
+				EventID:    "event-plugin-install",
+				Runtime:    "openclaw-dev",
+				Type:       "plugin_install",
+				Plugin:     "semantic-router",
+				Package:    "semantic-router",
+				Version:    "1.2.0",
+				Digest:     "sha256:plugin-digest-1",
+				Source:     "git",
+				PackageDir: "/srv/moltbox-state/deploy/runtime/openclaw-dev/packages/event-plugin-install",
+			},
+			{
+				EventID: "event-plugin-remove",
+				Runtime: "openclaw-dev",
+				Type:    "plugin_remove",
+				Plugin:  "semantic-router",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("SaveReplayLog() error = %v", err)
+	}
+
+	plugins, err := store.ReplayPluginState("openclaw-dev")
+	if err != nil {
+		t.Fatalf("ReplayPluginState() error = %v", err)
+	}
+	if len(plugins) != 0 {
+		t.Fatalf("replay plugin state = %#v, want empty after plugin_remove", plugins)
+	}
+}

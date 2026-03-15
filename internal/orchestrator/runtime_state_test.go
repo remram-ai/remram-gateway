@@ -824,6 +824,74 @@ func TestRuntimePluginCheckpointPromotesBaselineAndClearsReplay(t *testing.T) {
 	}
 }
 
+func TestRuntimePluginRemoveAfterCheckpointUsesReplayTombstone(t *testing.T) {
+	t.Parallel()
+
+	manager, runner, store, runtimeRoot, _ := newRuntimeTestManager(t)
+	reloadRoute := &cli.Route{Resource: "dev", Kind: cli.KindRuntimeAction, Action: "reload", Environment: "dev", Runtime: "openclaw-dev"}
+	if _, err := manager.DeployService(context.Background(), reloadRoute, "dev"); err != nil {
+		t.Fatalf("initial DeployService() error = %v", err)
+	}
+
+	installRoute := &cli.Route{Resource: "dev", Kind: cli.KindRuntimePlugin, Action: "install", Environment: "dev", Runtime: "openclaw-dev", Subject: "semantic-router"}
+	if _, err := manager.RuntimePluginInstall(context.Background(), installRoute); err != nil {
+		t.Fatalf("RuntimePluginInstall() error = %v", err)
+	}
+
+	checkpointRoute := &cli.Route{Resource: "dev", Kind: cli.KindRuntimeAction, Action: "checkpoint", Environment: "dev", Runtime: "openclaw-dev"}
+	if _, err := manager.RuntimeCheckpoint(context.Background(), checkpointRoute); err != nil {
+		t.Fatalf("RuntimeCheckpoint() error = %v", err)
+	}
+
+	removeRoute := &cli.Route{Resource: "dev", Kind: cli.KindRuntimePlugin, Action: "remove", Environment: "dev", Runtime: "openclaw-dev", Subject: "semantic-router"}
+	result, err := manager.RuntimePluginRemove(context.Background(), removeRoute)
+	if err != nil {
+		t.Fatalf("RuntimePluginRemove() error = %v", err)
+	}
+	if !result.OK || result.Plugin != "semantic-router" {
+		t.Fatalf("remove result = %#v, want successful semantic-router removal", result)
+	}
+
+	log, err := store.LoadReplayLog("openclaw-dev")
+	if err != nil {
+		t.Fatalf("LoadReplayLog() error = %v", err)
+	}
+	if len(log.Events) != 1 || log.Events[0].Type != "plugin_remove" || log.Events[0].Plugin != "semantic-router" {
+		t.Fatalf("replay log = %#v, want semantic-router plugin_remove tombstone", log.Events)
+	}
+
+	plugins, err := manager.currentCheckpointPlugins("openclaw-dev")
+	if err != nil {
+		t.Fatalf("currentCheckpointPlugins() error = %v", err)
+	}
+	if len(plugins) != 0 {
+		t.Fatalf("current checkpoint plugins = %#v, want tombstone to hide semantic-router", plugins)
+	}
+
+	if _, err := os.Stat(filepath.Join(runtimeRoot, "extensions", "semantic-router")); !os.IsNotExist(err) {
+		t.Fatalf("expected semantic-router plugin to be absent after remove, stat err = %v", err)
+	}
+
+	runner.commands = nil
+	if _, err := manager.DeployService(context.Background(), reloadRoute, "dev"); err != nil {
+		t.Fatalf("post-remove DeployService() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(runtimeRoot, "extensions", "semantic-router")); !os.IsNotExist(err) {
+		t.Fatalf("expected semantic-router plugin to remain absent after replay reload, stat err = %v", err)
+	}
+
+	foundRestart := false
+	for _, command := range runner.commands {
+		if strings.Join(command, " ") == "docker restart openclaw-dev" {
+			foundRestart = true
+			break
+		}
+	}
+	if !foundRestart {
+		t.Fatalf("expected plugin removal replay to restart the runtime, got commands %#v", runner.commands)
+	}
+}
+
 func TestRuntimePluginInstallIsIdempotentAgainstBaseline(t *testing.T) {
 	t.Parallel()
 

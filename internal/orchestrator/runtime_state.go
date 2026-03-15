@@ -325,7 +325,12 @@ func (m *Manager) RuntimePluginInstall(ctx context.Context, route *cli.Route) (c
 		restoreRuntime()
 		return cli.RuntimePluginResult{}, err
 	}
-	if baselineDigest != "" && baselineDigest == installedPlugin.Digest {
+	previousDigest, err := m.effectivePluginDigest(service, installedPlugin.Name)
+	if err != nil {
+		restoreRuntime()
+		return cli.RuntimePluginResult{}, err
+	}
+	if baselineDigest != "" && baselineDigest == installedPlugin.Digest && previousDigest == baselineDigest {
 		log, err := m.stateStore.LoadReplayLog(service)
 		if err != nil {
 			restoreRuntime()
@@ -347,11 +352,6 @@ func (m *Manager) RuntimePluginInstall(ctx context.Context, route *cli.Route) (c
 		}, nil
 	}
 
-	previousDigest, err := m.effectivePluginDigest(service, installedPlugin.Name)
-	if err != nil {
-		restoreRuntime()
-		return cli.RuntimePluginResult{}, err
-	}
 	if previousDigest != "" && previousDigest == installedPlugin.Digest {
 		log, err := m.stateStore.LoadReplayLog(service)
 		if err != nil {
@@ -495,25 +495,73 @@ func (m *Manager) RuntimePluginRemove(ctx context.Context, route *cli.Route) (cl
 	}
 
 	plugin := canonicalRuntimePluginName(route.Subject)
+	currentPlugin, ok, err := m.effectivePluginState(service, plugin)
+	if err != nil {
+		return cli.RuntimePluginResult{}, err
+	}
+	if !ok {
+		return cli.RuntimePluginResult{}, fmt.Errorf("no deployed plugin found for %q in %s", plugin, service)
+	}
+
 	log, err := m.stateStore.LoadReplayLog(service)
 	if err != nil {
 		return cli.RuntimePluginResult{}, err
 	}
 
-	index, event, ok := latestReplayPluginEvent(log, plugin)
-	if !ok {
-		baselineDigest, checkpointID, err := m.baselinePluginDigest(service, plugin)
-		if err != nil {
-			return cli.RuntimePluginResult{}, err
-		}
-		if baselineDigest != "" {
-			return cli.RuntimePluginResult{}, fmt.Errorf("plugin %q is part of baseline checkpoint %s in %s", plugin, checkpointID, service)
-		}
-		return cli.RuntimePluginResult{}, fmt.Errorf("no replay deployment found for plugin %q in %s", plugin, service)
-	}
-
 	updated := log
-	updated.Events = append(append([]deploystate.ReplayEvent(nil), log.Events[:index]...), log.Events[index+1:]...)
+	deploymentID := newGatewayID("deploy")
+	resultEventID := ""
+	previousDigest := strings.TrimSpace(currentPlugin.Digest)
+	removedPackage := strings.TrimSpace(currentPlugin.Package)
+	removedVersion := strings.TrimSpace(currentPlugin.Version)
+	removedSource := strings.TrimSpace(currentPlugin.Source)
+	removedReplayEventID := ""
+
+	baselineDigest, _, err := m.baselinePluginDigest(service, plugin)
+	if err != nil {
+		return cli.RuntimePluginResult{}, err
+	}
+	if baselineDigest != "" {
+		resultEventID = newGatewayID("event")
+		updated.Events = append(updated.Events, deploystate.ReplayEvent{
+			EventID:      resultEventID,
+			DeploymentID: deploymentID,
+			Timestamp:    time.Now().UTC().Format(time.RFC3339),
+			Runtime:      service,
+			Type:         "plugin_remove",
+			Plugin:       plugin,
+			Package:      removedPackage,
+			Version:      removedVersion,
+			Digest:       previousDigest,
+			Source:       removedSource,
+			Details: map[string]string{
+				"requested_plugin": strings.TrimSpace(route.Subject),
+			},
+		})
+	} else {
+		index, event, ok := latestReplayPluginEvent(log, plugin)
+		if !ok {
+			return cli.RuntimePluginResult{}, fmt.Errorf("no replay deployment found for plugin %q in %s", plugin, service)
+		}
+		updated.Events = append(append([]deploystate.ReplayEvent(nil), log.Events[:index]...), log.Events[index+1:]...)
+		removedReplayEventID = event.EventID
+		if removedPackage == "" {
+			removedPackage = strings.TrimSpace(event.Package)
+		}
+		if removedVersion == "" {
+			removedVersion = strings.TrimSpace(event.Version)
+		}
+		if removedSource == "" {
+			removedSource = strings.TrimSpace(event.Source)
+		}
+		if previousDigest == "" {
+			previousDigest = strings.TrimSpace(event.Digest)
+			if previousDigest == "" {
+				previousDigest = strings.TrimSpace(event.PackageDigest)
+			}
+		}
+		resultEventID = event.EventID
+	}
 	if err := m.stateStore.SaveReplayLog(service, updated); err != nil {
 		return cli.RuntimePluginResult{}, err
 	}
@@ -530,25 +578,25 @@ func (m *Manager) RuntimePluginRemove(ctx context.Context, route *cli.Route) (cl
 		return cli.RuntimePluginResult{}, err
 	}
 
-	deploymentID := newGatewayID("deploy")
-	previousDigest := strings.TrimSpace(event.Digest)
-	if previousDigest == "" {
-		previousDigest = strings.TrimSpace(event.PackageDigest)
-	}
 	record := deploystate.DeploymentRecord{
 		DeploymentID:    deploymentID,
 		Timestamp:       time.Now().UTC().Format(time.RFC3339),
 		Actor:           deploymentActor(route),
-		Target:          service + "/plugin/" + event.Plugin,
+		Target:          service + "/plugin/" + plugin,
 		ArtifactVersion: "",
 		PreviousVersion: previousDigest,
 		Result:          "success",
 		Operation:       "runtime_plugin_remove",
 		Runtime:         service,
 		Details: map[string]string{
-			"event_id": event.EventID,
-			"package":  event.Package,
-			"source":   event.Source,
+			"event_id": func() string {
+				if removedReplayEventID != "" {
+					return removedReplayEventID
+				}
+				return resultEventID
+			}(),
+			"package": removedPackage,
+			"source":  removedSource,
 		},
 	}
 	if err := m.stateStore.AppendDeployment(record); err != nil {
@@ -559,14 +607,14 @@ func (m *Manager) RuntimePluginRemove(ctx context.Context, route *cli.Route) (cl
 		OK:           true,
 		Route:        route,
 		Runtime:      service,
-		Plugin:       event.Plugin,
-		Package:      event.Package,
-		Version:      event.Version,
+		Plugin:       plugin,
+		Package:      removedPackage,
+		Version:      removedVersion,
 		Digest:       previousDigest,
-		Source:       event.Source,
+		Source:       removedSource,
 		Action:       route.Action,
 		DeploymentID: deploymentID,
-		EventID:      event.EventID,
+		EventID:      resultEventID,
 		ReplayCount:  len(updated.Events),
 	}, nil
 }
@@ -670,7 +718,7 @@ func (m *Manager) replayRuntimeDeployHistory(ctx context.Context, route *cli.Rou
 		if err != nil {
 			return err
 		}
-		if event.Type == "plugin_install" && changed {
+		if strings.HasPrefix(event.Type, "plugin_") && changed {
 			pluginRestartPending = true
 		}
 	}
@@ -704,6 +752,8 @@ func (m *Manager) executeReplayEvent(ctx context.Context, service string, event 
 	switch event.Type {
 	case "plugin_install":
 		return m.installPluginFromGatewayState(ctx, service, event)
+	case "plugin_remove":
+		return m.removePluginFromGatewayState(service, event)
 	case "skill_install":
 		return false, m.installSkillFromGatewayState(ctx, service, event)
 	default:
@@ -906,6 +956,50 @@ func latestReplayPluginEvent(log deploystate.ReplayLog, plugin string) (int, dep
 	return -1, deploystate.ReplayEvent{}, false
 }
 
+func (m *Manager) effectivePluginState(service, plugin string) (deploystate.CheckpointPlugin, bool, error) {
+	state, err := m.effectivePluginStateMap(service)
+	if err != nil {
+		return deploystate.CheckpointPlugin{}, false, err
+	}
+	item, ok := state[plugin]
+	return item, ok, nil
+}
+
+func (m *Manager) effectivePluginStateMap(service string) (map[string]deploystate.CheckpointPlugin, error) {
+	checkpoint, _, err := m.stateStore.LoadCheckpoint(service)
+	if err != nil {
+		return nil, err
+	}
+	state := checkpointPluginState(checkpoint)
+	log, err := m.stateStore.LoadReplayLog(service)
+	if err != nil {
+		return nil, err
+	}
+	for _, event := range log.Events {
+		name := canonicalRuntimePluginName(event.Plugin)
+		if name == "" {
+			continue
+		}
+		switch event.Type {
+		case "plugin_install":
+			digest := strings.TrimSpace(event.Digest)
+			if digest == "" {
+				digest = strings.TrimSpace(event.PackageDigest)
+			}
+			state[name] = deploystate.CheckpointPlugin{
+				Name:    name,
+				Package: strings.TrimSpace(event.Package),
+				Version: strings.TrimSpace(event.Version),
+				Digest:  digest,
+				Source:  strings.TrimSpace(event.Source),
+			}
+		case "plugin_remove":
+			delete(state, name)
+		}
+	}
+	return state, nil
+}
+
 func (m *Manager) effectiveSkillDigest(service, skill string) (string, error) {
 	checkpoint, _, err := m.stateStore.LoadCheckpoint(service)
 	if err != nil {
@@ -923,17 +1017,9 @@ func (m *Manager) effectiveSkillDigest(service, skill string) (string, error) {
 }
 
 func (m *Manager) effectivePluginDigest(service, plugin string) (string, error) {
-	checkpoint, _, err := m.stateStore.LoadCheckpoint(service)
+	state, err := m.effectivePluginStateMap(service)
 	if err != nil {
 		return "", err
-	}
-	state := checkpointPluginState(checkpoint)
-	logPlugins, err := m.stateStore.ReplayPluginState(service)
-	if err != nil {
-		return "", err
-	}
-	for name, replayPlugin := range logPlugins {
-		state[name] = replayPlugin
 	}
 	return state[plugin].Digest, nil
 }
@@ -1225,17 +1311,9 @@ func (m *Manager) currentCheckpointSkills(service string) ([]deploystate.Checkpo
 }
 
 func (m *Manager) currentCheckpointPlugins(service string) ([]deploystate.CheckpointPlugin, error) {
-	checkpoint, _, err := m.stateStore.LoadCheckpoint(service)
+	state, err := m.effectivePluginStateMap(service)
 	if err != nil {
 		return nil, err
-	}
-	state := checkpointPluginState(checkpoint)
-	logPlugins, err := m.stateStore.ReplayPluginState(service)
-	if err != nil {
-		return nil, err
-	}
-	for name, plugin := range logPlugins {
-		state[name] = plugin
 	}
 
 	names := make([]string, 0, len(state))
@@ -1378,12 +1456,12 @@ func (m *Manager) discoverDeployablePlugins() ([]deployablePlugin, error) {
 func orderedRuntimeReplayEvents(events []deploystate.ReplayEvent) []deploystate.ReplayEvent {
 	ordered := make([]deploystate.ReplayEvent, 0, len(events))
 	for _, event := range events {
-		if event.Type == "plugin_install" {
+		if strings.HasPrefix(event.Type, "plugin_") {
 			ordered = append(ordered, event)
 		}
 	}
 	for _, event := range events {
-		if event.Type != "plugin_install" {
+		if !strings.HasPrefix(event.Type, "plugin_") {
 			ordered = append(ordered, event)
 		}
 	}
@@ -1722,6 +1800,39 @@ func (m *Manager) installReplayPlugin(ctx context.Context, service string, event
 	defer cleanup()
 
 	return m.installRuntimePluginSpec(ctx, service, installSpec, false)
+}
+
+func (m *Manager) removePluginFromGatewayState(service string, event deploystate.ReplayEvent) (bool, error) {
+	plugin := canonicalRuntimePluginName(event.Plugin)
+	if plugin == "" {
+		return false, fmt.Errorf("replay event %s is missing plugin name", event.EventID)
+	}
+
+	currentPlugins, err := m.discoverInstalledPlugins(service)
+	if err != nil {
+		return false, err
+	}
+	currentPlugin, ok := currentPlugins[plugin]
+	if !ok {
+		return false, nil
+	}
+
+	pluginRoot := strings.TrimSpace(currentPlugin.HostDir)
+	if pluginRoot == "" {
+		pluginRoot = filepath.Join(m.config.RuntimeComponentDir(service), "extensions", plugin)
+	}
+	if err := os.RemoveAll(pluginRoot); err != nil {
+		return false, fmt.Errorf("remove plugin %q from %s: %w", plugin, service, err)
+	}
+
+	updatedPlugins, err := m.discoverInstalledPlugins(service)
+	if err != nil {
+		return false, err
+	}
+	if _, ok := updatedPlugins[plugin]; ok {
+		return false, fmt.Errorf("plugin %q is still present in runtime %s after replay remove", plugin, service)
+	}
+	return true, nil
 }
 
 func (m *Manager) installRuntimePluginSpec(ctx context.Context, service, installSpec string, pin bool) error {

@@ -71,14 +71,14 @@ type CheckpointPlugin struct {
 }
 
 type CheckpointMetadata struct {
-	Runtime      string            `json:"runtime"`
-	CheckpointID string            `json:"checkpoint_id"`
-	Timestamp    string            `json:"timestamp"`
-	Image        string            `json:"image"`
-	SourceImage  string            `json:"source_image,omitempty"`
-	SnapshotDir  string            `json:"snapshot_dir"`
-	DeploymentID string            `json:"deployment_id"`
-	Skills       []CheckpointSkill `json:"skills,omitempty"`
+	Runtime      string             `json:"runtime"`
+	CheckpointID string             `json:"checkpoint_id"`
+	Timestamp    string             `json:"timestamp"`
+	Image        string             `json:"image"`
+	SourceImage  string             `json:"source_image,omitempty"`
+	SnapshotDir  string             `json:"snapshot_dir"`
+	DeploymentID string             `json:"deployment_id"`
+	Skills       []CheckpointSkill  `json:"skills,omitempty"`
 	Plugins      []CheckpointPlugin `json:"plugins,omitempty"`
 }
 
@@ -297,19 +297,25 @@ func (s *Store) ReplayPluginState(runtime string) (map[string]CheckpointPlugin, 
 	}
 	state := make(map[string]CheckpointPlugin, len(log.Events))
 	for _, event := range log.Events {
-		if event.Type != "plugin_install" || strings.TrimSpace(event.Plugin) == "" {
+		name := strings.TrimSpace(event.Plugin)
+		if name == "" {
 			continue
 		}
-		digest := strings.TrimSpace(event.Digest)
-		if digest == "" {
-			digest = strings.TrimSpace(event.PackageDigest)
-		}
-		state[event.Plugin] = CheckpointPlugin{
-			Name:    event.Plugin,
-			Package: event.Package,
-			Version: event.Version,
-			Digest:  digest,
-			Source:  event.Source,
+		switch event.Type {
+		case "plugin_install":
+			digest := strings.TrimSpace(event.Digest)
+			if digest == "" {
+				digest = strings.TrimSpace(event.PackageDigest)
+			}
+			state[name] = CheckpointPlugin{
+				Name:    name,
+				Package: event.Package,
+				Version: event.Version,
+				Digest:  digest,
+				Source:  event.Source,
+			}
+		case "plugin_remove":
+			delete(state, name)
 		}
 	}
 	return state, nil
