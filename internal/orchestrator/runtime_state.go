@@ -1836,6 +1836,9 @@ func (m *Manager) removePluginFromGatewayState(service string, event deploystate
 }
 
 func (m *Manager) installRuntimePluginSpec(ctx context.Context, service, installSpec string, pin bool) error {
+	if err := m.ensureRuntimePluginRoot(ctx, service); err != nil {
+		return err
+	}
 	args := []string{"plugins", "install", installSpec}
 	if pin {
 		args = append(args, "--pin")
@@ -1846,6 +1849,28 @@ func (m *Manager) installRuntimePluginSpec(ctx context.Context, service, install
 	}
 	if !result.OK {
 		return fmt.Errorf("install plugin %q in %s failed: %s", installSpec, service, commandFailureSummary(result))
+	}
+	return nil
+}
+
+func (m *Manager) ensureRuntimePluginRoot(ctx context.Context, service string) error {
+	stateRoot := m.runtimeOpenClawStateRoot(ctx, service)
+	extensionsRoot := path.Join(stateRoot, "extensions")
+	command := fmt.Sprintf(
+		"mkdir -p %s %s && chown 1000:1000 %s %s && chmod 0755 %s %s",
+		shellQuote(stateRoot),
+		shellQuote(extensionsRoot),
+		shellQuote(stateRoot),
+		shellQuote(extensionsRoot),
+		shellQuote(stateRoot),
+		shellQuote(extensionsRoot),
+	)
+	result, err := m.runner.Run(ctx, "", "docker", "exec", "-u", "0", service, "sh", "-lc", command)
+	if err != nil {
+		return fmt.Errorf("prepare plugin root for %s: %w", service, err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("prepare plugin root for %s failed: %s", service, strings.TrimSpace(result.Stdout))
 	}
 	return nil
 }
