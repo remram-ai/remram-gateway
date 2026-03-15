@@ -827,10 +827,6 @@ func (m *Manager) installPluginFromGatewayState(ctx context.Context, service str
 	if err := m.installReplayPlugin(ctx, service, event); err != nil {
 		return false, err
 	}
-	if err := m.verifyRuntimePluginPresence(ctx, service, plugin); err != nil {
-		return false, err
-	}
-
 	updatedPlugins, err := m.discoverInstalledPlugins(service)
 	if err != nil {
 		return false, err
@@ -1650,6 +1646,9 @@ func (m *Manager) installRuntimePlugin(ctx context.Context, service, eventID, re
 		if err != nil {
 			return runtimePluginState{}, err
 		}
+	}
+	if err := m.restartRuntimeContainer(ctx, service); err != nil {
+		return runtimePluginState{}, err
 	}
 	if err := m.verifyRuntimePluginPresence(ctx, service, plugin.Name); err != nil {
 		return runtimePluginState{}, err
